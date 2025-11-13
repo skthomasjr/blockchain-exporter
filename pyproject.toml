@@ -29,10 +29,11 @@ build-backend = "poetry.core.masonry.api"
 
 [dependency-groups]
 dev = [
-    "ruff (>=0.14.4,<0.15.0)",
+    "httpx (>=0.24.0)",
+    "mdformat (>=0.7.20,<0.8.0)",
     "pytest (>=9.0.0,<10.0.0)",
     "pytest-cov (>=6.0.0,<7.0.0)",
-    "mdformat (>=0.7.20,<0.8.0)",
+    "ruff (>=0.14.4,<0.15.0)",
 ]
 
 [tool.pytest.ini_options]
