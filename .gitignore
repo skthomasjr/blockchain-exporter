@@ -10,6 +10,6 @@ __pycache__/
 .venv/
 .vscode/
 coverage.xml
-docs
+docs/AI_TODO.md
 helm/charts/blockchain-exporter/values.local.yaml
 htmlcov/
