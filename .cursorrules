@@ -1,0 +1,90 @@
+version = 1
+
+[general]
+assistant_instructions = """
+- Preserve existing formatting; never run mass reformatters or reorder imports unless asked.
+- Separate consecutive variable declarations in Python with a blank line to match project style.
+- Keep edits narrowly scoped with clear reasoning; avoid sweeping refactors during focused tasks.
+- Prefer absolute paths when referencing files or invoking tools.
+- Confirm before modifying content under docs/ unless explicitly requested.
+- When adding tests, mirror existing fixture patterns and keep runtime fast.
+- When closing tasks, run `make lint` and `make test` to verify changes.
+- Prioritize production readiness: maintainability, testability, performance, clarity.
+- Maintain test coverage at or above 85% (verify with `make test`).
+- Never log secrets (e.g., rpc_url); use structured logging extras instead.
+- Keep Prometheus label ordering consistent across metric definitions.
+- Alphabetize non-functional enumerations (__all__, constant lists, documentation bullets) where ordering has no semantic meaning to keep diffs tidy.
+- Fix any linting issues reported by Ruff, mdformat (--wrap=keep), or Hadolint.
+- Update documentation (README.md, docs/AI_REFERENCE.md, docs/AI_TODO.md) when adding features or making significant changes.
+"""
+
+[[rule]]
+description = "Python modules"
+patterns = ["**/*.py"]
+assistant_instructions = """
+- Follow current import grouping (stdlib, third-party, local) without introducing new spacing changes.
+- Use descriptive variable names; leave existing logging structure intact.
+- Avoid introducing new dependencies without consultation.
+- Alphabetize __all__ exports: classes first (alphabetically), then functions (alphabetically), then constants (alphabetically).
+- Never log secrets (rpc_url, API keys, etc.); exclude them from structured logging extras.
+- Keep Prometheus metric label ordering consistent when defining or updating metrics.
+- When adding tests, verify coverage remains ≥85% and update test files in tests/ directory.
+- Use concise docstrings for modules, classes, and functions; align style with existing conventions.
+"""
+
+[[rule]]
+description = "Markdown documentation"
+patterns = ["**/*.md"]
+assistant_instructions = """
+- Format Markdown using `mdformat --wrap=keep` (run `make lint-md` to verify).
+- Update README.md when adding features, configuration options, or deployment methods.
+- Update docs/AI_REFERENCE.md when making architectural changes or adding new modules.
+- Update docs/AI_TODO.md when completing tasks (move items from Task/Cleanup to Completed).
+- Keep documentation focused and avoid unnecessary verbosity.
+- Use consistent formatting for code blocks, lists, and tables.
+"""
+
+[[rule]]
+description = "Helm charts"
+patterns = ["helm/**/*.yaml", "helm/**/*.tpl"]
+assistant_instructions = """
+- Preserve Helm template formatting and indentation.
+- Don't reformat Helm templates unless explicitly requested.
+- Follow existing Helm chart structure and naming conventions.
+- When modifying values.yaml, maintain consistent YAML formatting.
+- Verify Helm charts with `make lint-helm` after changes.
+- Document new values.yaml options in comments when adding configuration.
+"""
+
+[[rule]]
+description = "Dockerfile"
+patterns = ["Dockerfile", "**/Dockerfile*"]
+assistant_instructions = """
+- Follow existing Dockerfile structure and layer ordering.
+- Fix any Hadolint issues reported (run `make lint-docker` to verify).
+- Use hadolint ignore comments when necessary (e.g., DL3008 for apt-get update).
+- Keep Dockerfile focused on production use; avoid development-only dependencies in final image.
+"""
+
+[[rule]]
+description = "Configuration files"
+patterns = ["**/*.toml", "**/*.yaml", "**/*.yml", ".env*"]
+assistant_instructions = """
+- Preserve existing formatting and structure in config.toml, pyproject.toml, and values.yaml.
+- When adding configuration options, document them in README.md.
+- Use environment variable interpolation syntax (${VAR_NAME}) for secrets in config.toml.
+- Keep configuration validation aggressive; enforce non-empty names/addresses, positive lookbacks, etc.
+- Verify configuration with `make validate-config` after changes.
+"""
+
+[[rule]]
+description = "Tests"
+patterns = ["tests/**/*.py", "test_*.py"]
+assistant_instructions = """
+- Mirror existing fixture patterns (see tests/conftest.py).
+- Keep test runtime fast; avoid slow integration tests unless necessary.
+- Use descriptive test names that clearly indicate what is being tested.
+- Verify test coverage remains ≥85% after adding tests (run `make test`).
+- When adding tests, verify with `make lint` and `make test` before completing.
+- Use mocked contexts and RPC clients to avoid hitting real endpoints in tests.
+"""

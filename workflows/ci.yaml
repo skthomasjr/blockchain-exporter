@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: pipx install poetry~=2.2
+
+      - name: Install dependencies
+        run: |-
+          poetry install --with dev
+
+      - name: Lint (Python)
+        run: poetry run ruff check .
+
+      - name: Lint (Markdown)
+        run: poetry run mdformat --wrap=keep --check README.md docs
+
+      - name: Lint (Dockerfile)
+        run: docker run --rm -i hadolint/hadolint < Dockerfile
+
+      - name: Tests
+        run: poetry run pytest
+
+      - name: Validate config
+        run: poetry run python -m blockchain_exporter.cli --config config.toml
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml

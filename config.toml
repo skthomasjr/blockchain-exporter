@@ -1,0 +1,102 @@
+[[blockchains]]
+name = "Ethereum Mainnet"
+rpc_url = "${ETH_MAINNET_RPC_ENDPOINT}"
+poll_interval = "5m"
+
+    [[blockchains.accounts]]
+    name = "Binance Hot Wallet"
+    address = "0x3f5ce5fbfe3e9af3971dd833d26ba9b5c936f0be"
+
+    [[blockchains.accounts]]
+    name = "USDT Contract"
+    address = "0xdac17f958d2ee523a2206206994597c13d831ec7"
+
+    [[blockchains.accounts]]
+    name = "Uniswap V2 Router"
+    address = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
+
+    [[blockchains.accounts]]
+    name = "Uniswap V2 ETH/USDT Pool"
+    address = "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852"
+
+    [[blockchains.contracts]]
+    name = "USD Coin"
+    address = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+
+        [[blockchains.contracts.accounts]]
+        name = "Circle Treasury"
+        address = "0x55fe002aeff02f77364de339a1292923a15844b8"
+
+        [[blockchains.contracts.accounts]]
+        name = "Uniswap V2 ETH/USDT Pool"
+        address = "0x0d4a11d5eeaac28ec3f61d100daf4d40471f1852"
+
+    [[blockchains.contracts]]
+    name = "Dai Stablecoin"
+    address = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
+
+        [[blockchains.contracts.accounts]]
+        name = "Compound DAI"
+        address = "0x5d3a536E4D6DbD6114cc1Ead35777bAB948E3643"
+
+        [[blockchains.contracts.accounts]]
+        name = "USDT Contract"
+        address = "0xdac17f958d2ee523a2206206994597c13d831ec7"
+
+    [[blockchains.contracts]]
+    name = "Chainlink Token"
+    address = "0x514910771AF9Ca656af840dff83E8264EcF986CA"
+
+        [[blockchains.contracts.accounts]]
+        name = "Binance 14"
+        address = "0xf977814e90dA44bFA03b6295A0616a897441aceC"
+
+        [[blockchains.contracts.accounts]]
+        name = "Binance Hot Wallet"
+        address = "0x3f5ce5fbfe3e9af3971dd833d26ba9b5c936f0be"
+
+    [[blockchains.contracts]]
+    name = "Bored Ape Yacht Club"
+    address = "0xbc4CA0eda7647A8ab7C2061c2e118A18a936f13D"
+
+        [[blockchains.contracts.accounts]]
+        name = "BAYC Whale 1"
+        address = "0x29469395eAf6f95920E59F858042f0e28D98a20B"
+
+        [[blockchains.contracts.accounts]]
+        name = "BAYC Whale 2"
+        address = "0xf76246B0842c92aD5bD745973Ca9EB85B937b126"
+
+[[blockchains]]
+name = "Ethereum Sepolia"
+rpc_url = "${ETH_SEPOLIA_RPC_ENDPOINT}"
+poll_interval = "2m"
+
+    [[blockchains.accounts]]
+    name = "Stakely Faucet"
+    address = "0x0e79065B5F11b5BD1e62B935A600976ffF3754B9"
+
+    [[blockchains.accounts]]
+    name = "Wrapped ETH"
+    address = "0xB4FBF271143F4FBf7B91A5ded31805e42b2208d6"
+
+    [[blockchains.contracts]]
+    name = "USD Coin"
+    address = "0x75faf114eafb1bdbe2f0316df893fdc81ca2bb36"
+
+    [[blockchains.contracts]]
+    name = "Wrapped Ether"
+    address = "0x097D90c9d3D17AaBe0af0F82baF21bCAfea6a954"
+    transfer_lookback_blocks = 5000
+
+    [[blockchains.contracts]]
+    name = "Chainlink Token"
+    address = "0x779877A7B0D9E8603169DdbD7836e478b4624789"
+
+        [[blockchains.contracts.accounts]]
+        name = "Chainlink Whale 1"
+        address = "0x86EFBD0b6736Bed994962f9797049422A3A8E8Ad"
+
+        [[blockchains.contracts.accounts]]
+        name = "Chainlink Whale 2"
+        address = "0x9DdfaCa8183c41ad55329BdeeD9F6A8d53168B1B"

@@ -1,0 +1,15 @@
+__pycache__/
+.benchmarks/
+.coverage*
+.DS_Store
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+.vscode/
+*.pyc
+build/
+coverage.xml
+dist/
+htmlcov/
+node_modules/

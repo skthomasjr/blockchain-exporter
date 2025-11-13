@@ -1,0 +1,588 @@
+"""Metric collection helpers for blockchain entities."""
+
+from __future__ import annotations
+
+import logging
+from decimal import Decimal
+from typing import Set
+
+from web3 import Web3
+from web3.exceptions import Web3RPCError
+
+from .config import ContractConfig
+from .logging import build_log_extra, get_logger, log_duration
+from .models import AccountLabels, ChainRuntimeContext, ContractLabels, TransferWindow
+from .rpc import RPC_MAX_RETRIES
+
+LOGGER = get_logger(__name__)
+
+DEFAULT_TOKEN_DECIMALS = 0
+DEFAULT_TRANSFER_LOOKBACK_BLOCKS = 5000
+LOG_SPLIT_MIN_BLOCK_SPAN = 1
+LOG_MAX_CHUNK_SIZE = 2000
+TRANSFER_EVENT_TOPIC = Web3.keccak(text="Transfer(address,address,uint256)").hex()
+
+ERC20_ABI = (
+    {
+        "name": "balanceOf",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [
+            {"name": "account", "type": "address"},
+        ],
+        "outputs": [
+            {"name": "", "type": "uint256"},
+        ],
+    },
+    {
+        "name": "decimals",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [
+            {"name": "", "type": "uint8"},
+        ],
+    },
+)
+
+
+def record_contract_balances(
+    runtime: ChainRuntimeContext,
+    latest_block_number: int,
+) -> None:
+    blockchain = runtime.config
+    chain_state = runtime.chain_state
+
+    for contract in blockchain.contracts:
+        contract_labels = runtime.contract_labels(contract)
+        chain_state.contract_balance_labels.add(contract_labels.as_tuple())
+
+        window = _resolve_transfer_lookup_window(contract, latest_block_number)
+        transfer_labels = contract_labels.with_window(window.span)
+        chain_state.contract_transfer_labels.add(transfer_labels)
+
+        with log_duration(
+            LOGGER,
+            "collect_contract_balances",
+            extra=build_log_extra(
+                blockchain=blockchain,
+                chain_id_label=runtime.chain_id_label,
+                contract=contract,
+                additional={
+                    "window_start": window.start_block,
+                    "window_end": window.end_block,
+                },
+            ),
+        ):
+            try:
+                checksum_address = Web3.to_checksum_address(contract.address)
+
+                balance_wei = runtime.rpc.get_balance(
+                    checksum_address,
+                    extra=build_log_extra(
+                        blockchain=blockchain,
+                        chain_id_label=runtime.chain_id_label,
+                        contract=contract,
+                    ),
+                )
+
+                balance_eth = Web3.from_wei(balance_wei, "ether")
+
+                total_supply = _collect_contract_total_supply(
+                    runtime,
+                    contract,
+                    checksum_address,
+                    contract_labels,
+                )
+
+                transfer_count = _collect_contract_transfer_count(
+                    runtime,
+                    contract,
+                    checksum_address,
+                    contract_labels,
+                    window,
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning(
+                    "Failed to retrieve balance for contract %s on %s.",
+                    contract.address,
+                    blockchain.name,
+                    exc_info=exc,
+                    extra=build_log_extra(
+                        blockchain=blockchain,
+                        chain_id_label=runtime.chain_id_label,
+                        contract=contract,
+                        additional={
+                            "window_start": window.start_block,
+                            "window_end": window.end_block,
+                        },
+                    ),
+                )
+
+                metrics = runtime.metrics
+                labels_tuple = (*contract_labels.as_tuple(),)
+                transfer_labels_tuple = (*transfer_labels,)
+
+                metrics.contract.balance_eth.labels(*labels_tuple).set(0)
+                metrics.contract.balance_wei.labels(*labels_tuple).set(0)
+                metrics.contract.token_supply.labels(*labels_tuple).set(0)
+                metrics.contract.transfer_count.labels(*transfer_labels_tuple).set(0)
+
+                continue
+
+            metrics = runtime.metrics
+            labels_tuple = (*contract_labels.as_tuple(),)
+            transfer_labels_tuple = (*transfer_labels,)
+
+            metrics.contract.balance_eth.labels(*labels_tuple).set(float(balance_eth))
+            metrics.contract.balance_wei.labels(*labels_tuple).set(float(balance_wei))
+
+            metrics.contract.token_supply.labels(*labels_tuple).set(float(total_supply))
+
+            if transfer_count is not None:
+                metrics.contract.transfer_count.labels(*transfer_labels_tuple).set(
+                    float(transfer_count)
+                )
+            else:
+                metrics.contract.transfer_count.labels(*transfer_labels_tuple).set(0)
+
+
+def record_additional_contract_accounts(
+    runtime: ChainRuntimeContext,
+    processed_accounts: Set[str],
+) -> None:
+    blockchain = runtime.config
+
+    for contract in blockchain.contracts:
+        for contract_account in contract.accounts:
+            account_labels = runtime.account_labels(contract_account)
+            account_address_lower = account_labels.account_address.lower()
+
+            if account_address_lower in processed_accounts:
+                continue
+
+            processed_accounts.add(account_address_lower)
+
+            clear_eth_metrics_for_account(runtime, account_labels)
+
+            try:
+                checksum_address = Web3.to_checksum_address(contract_account.address)
+
+                code = runtime.rpc.get_code(
+                    checksum_address,
+                    extra=build_log_extra(
+                        blockchain=blockchain,
+                        chain_id_label=runtime.chain_id_label,
+                        contract=contract,
+                        account_name=contract_account.name,
+                        account_address=contract_account.address,
+                    ),
+                )
+
+                is_contract = bool(code and len(code) > 0)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning(
+                    "Failed to retrieve balance for contract account %s on %s.",
+                    contract_account.address,
+                    blockchain.name,
+                    exc_info=exc,
+                    extra=build_log_extra(
+                        blockchain=blockchain,
+                        chain_id_label=runtime.chain_id_label,
+                        contract=contract,
+                        account_name=contract_account.name,
+                        account_address=contract_account.address,
+                    ),
+                )
+
+                _record_contract_account_token_balance_zero(
+                    runtime,
+                    contract,
+                    account_labels,
+                    is_contract=False,
+                    decimals_label=_contract_decimals_label(contract),
+                )
+
+                clear_eth_metrics_for_account(runtime, account_labels)
+
+                continue
+
+            _record_contract_account_token_balance(
+                runtime,
+                contract,
+                checksum_address,
+                account_labels,
+                is_contract,
+            )
+
+
+def clear_token_metrics_for_account(
+    runtime: ChainRuntimeContext,
+    account_labels: AccountLabels,
+    is_contract: bool,
+) -> None:
+    chain_state = runtime.chain_state
+    contract_flag = "1" if is_contract else "0"
+
+    for contract in runtime.config.contracts:
+        token_labels = (
+            runtime.config.name,
+            runtime.chain_id_label,
+            contract.name,
+            contract.address,
+            _contract_decimals_label(contract),
+            account_labels.account_name,
+            account_labels.account_address,
+            contract_flag,
+        )
+
+        try:
+            metrics = runtime.metrics
+            metrics.account.token_balance.remove(*token_labels)
+        except KeyError:
+            pass
+
+        try:
+            metrics = runtime.metrics
+            metrics.account.token_balance_raw.remove(*token_labels)
+        except KeyError:
+            pass
+
+        chain_state.account_token_labels.discard(token_labels)
+
+
+def clear_eth_metrics_for_account(
+    runtime: ChainRuntimeContext,
+    account_labels: AccountLabels,
+) -> None:
+    for is_contract_flag in ("0", "1"):
+        label_tuple = (*account_labels.as_tuple(), is_contract_flag)
+
+        try:
+            runtime.metrics.account.balance_eth.remove(*label_tuple)
+        except KeyError:
+            pass
+
+        try:
+            runtime.metrics.account.balance_wei.remove(*label_tuple)
+        except KeyError:
+            pass
+
+
+def _record_contract_account_token_balance(
+    runtime: ChainRuntimeContext,
+    contract: ContractConfig,
+    account_checksum: str,
+    account_labels: AccountLabels,
+    is_contract: bool,
+) -> None:
+    web3_client = runtime.web3
+
+    try:
+        checksum_contract = Web3.to_checksum_address(contract.address)
+
+        contract_instance = web3_client.eth.contract(
+            address=checksum_contract,
+            abi=ERC20_ABI,
+        )
+
+        balance_raw = runtime.rpc.call_contract_function(
+            lambda: contract_instance.functions.balanceOf(account_checksum).call(),
+            f"{contract.address}.balanceOf({account_checksum})",
+            max_attempts=RPC_MAX_RETRIES,
+            extra=build_log_extra(
+                blockchain=runtime.config,
+                chain_id_label=runtime.chain_id_label,
+                contract=contract,
+                account_name=account_labels.account_name,
+                account_address=account_labels.account_address,
+            ),
+        )
+
+        decimals = contract.decimals
+
+        if decimals is None:
+            try:
+                decimals = runtime.rpc.call_contract_function(
+                    lambda: contract_instance.functions.decimals().call(),
+                    f"{contract.address}.decimals()",
+                    max_attempts=1,
+                    log_level=logging.DEBUG,
+                    include_traceback=False,
+                    extra=build_log_extra(
+                        blockchain=runtime.config,
+                        chain_id_label=runtime.chain_id_label,
+                        contract=contract,
+                    ),
+                )
+            except Exception as decimals_exc:  # noqa: BLE001
+                LOGGER.debug(
+                    "Unable to read decimals for token %s on %s; defaulting to %s.",
+                    contract.name,
+                    runtime.config.name,
+                    DEFAULT_TOKEN_DECIMALS,
+                    exc_info=decimals_exc,
+                    extra=build_log_extra(
+                        blockchain=runtime.config,
+                        chain_id_label=runtime.chain_id_label,
+                        contract=contract,
+                    ),
+                )
+
+                decimals = DEFAULT_TOKEN_DECIMALS
+
+        decimals_label = _contract_decimals_label(contract, decimals)
+
+        normalized_balance = Decimal(balance_raw) / (Decimal(10) ** decimals)
+    except Exception as exc:  # noqa: BLE001
+        decimals_value = locals().get("decimals")
+        decimals_fallback = (
+            decimals_value if isinstance(decimals_value, int) else DEFAULT_TOKEN_DECIMALS
+        )
+
+        LOGGER.debug(
+            "Failed to retrieve token balance for account %s on contract %s (%s); defaulting to zero (decimals=%s).",
+            account_labels.account_address,
+            contract.name,
+            runtime.config.name,
+            decimals_fallback,
+            exc_info=exc,
+            extra=build_log_extra(
+                blockchain=runtime.config,
+                chain_id_label=runtime.chain_id_label,
+                contract=contract,
+                account_name=account_labels.account_name,
+                account_address=account_labels.account_address,
+            ),
+        )
+
+        _record_contract_account_token_balance_zero(
+            runtime,
+            contract,
+            account_labels,
+            is_contract,
+            _contract_decimals_label(contract, decimals_fallback),
+        )
+
+        return
+
+    token_labels = (
+        runtime.config.name,
+        runtime.chain_id_label,
+        contract.name,
+        contract.address,
+        decimals_label,
+        account_labels.account_name,
+        account_labels.account_address,
+        "1" if is_contract else "0",
+    )
+
+    runtime.chain_state.account_token_labels.add(token_labels)
+
+    metrics = runtime.metrics
+
+    metrics.account.token_balance.labels(*token_labels).set(float(normalized_balance))
+    metrics.account.token_balance_raw.labels(*token_labels).set(float(balance_raw))
+
+
+def _record_contract_account_token_balance_zero(
+    runtime: ChainRuntimeContext,
+    contract: ContractConfig,
+    account_labels: AccountLabels,
+    is_contract: bool,
+    decimals_label: str,
+) -> None:
+    token_labels = (
+        runtime.config.name,
+        runtime.chain_id_label,
+        contract.name,
+        contract.address,
+        decimals_label,
+        account_labels.account_name,
+        account_labels.account_address,
+        "1" if is_contract else "0",
+    )
+
+    runtime.chain_state.account_token_labels.add(token_labels)
+
+    metrics = runtime.metrics
+
+    metrics.account.token_balance.labels(*token_labels).set(0)
+    metrics.account.token_balance_raw.labels(*token_labels).set(0)
+
+
+def _collect_contract_total_supply(
+    runtime: ChainRuntimeContext,
+    contract: ContractConfig,
+    contract_address: str,
+    contract_labels: ContractLabels,
+) -> Decimal:
+    contract_proxy = runtime.web3.eth.contract(
+        address=contract_address,
+        abi=[
+            {
+                "name": "totalSupply",
+                "type": "function",
+                "stateMutability": "view",
+                "inputs": [],
+                "outputs": [{"name": "", "type": "uint256"}],
+            }
+        ],
+    )
+
+    try:
+        supply_raw = runtime.rpc.call_contract_function(
+            lambda: contract_proxy.functions.totalSupply().call(),
+            f"{contract_address}.totalSupply()",
+            max_attempts=1,
+            log_level=logging.DEBUG,
+            include_traceback=False,
+            extra=build_log_extra(
+                blockchain=runtime.config,
+                chain_id_label=runtime.chain_id_label,
+                contract=contract,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.debug(
+            "Unable to retrieve totalSupply for contract %s on %s; defaulting to zero.",
+            contract_address,
+            runtime.config.name,
+            exc_info=exc,
+            extra=build_log_extra(
+                blockchain=runtime.config,
+                chain_id_label=runtime.chain_id_label,
+                contract=contract,
+            ),
+        )
+
+        return Decimal(0)
+
+    return Decimal(supply_raw)
+
+
+def _collect_contract_transfer_count(
+    runtime: ChainRuntimeContext,
+    contract: ContractConfig,
+    contract_address: str,
+    contract_labels: ContractLabels,
+    window: TransferWindow,
+) -> int | None:
+    blockchain = runtime.config
+
+    total_logs = 0
+    ranges: list[tuple[int, int]] = [(window.start_block, window.end_block)]
+
+    while ranges:
+        range_start, range_end = ranges.pop()
+
+        if range_start > range_end:
+            continue
+
+        if range_end - range_start > LOG_MAX_CHUNK_SIZE:
+            chunk_end = range_start + LOG_MAX_CHUNK_SIZE
+
+            ranges.append((chunk_end + 1, range_end))
+            ranges.append((range_start, chunk_end))
+
+            continue
+
+        try:
+            logs = runtime.rpc.get_logs(
+                {
+                    "address": contract_address,
+                    "fromBlock": range_start,
+                    "toBlock": range_end,
+                    "topics": [TRANSFER_EVENT_TOPIC],
+                },
+                description=f"eth_getLogs({contract_address})",
+                max_attempts=1,
+                extra=build_log_extra(
+                    blockchain=blockchain,
+                    chain_id_label=runtime.chain_id_label,
+                    contract=contract,
+                    additional={
+                        "from_block": range_start,
+                        "to_block": range_end,
+                    },
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            if _is_response_too_big_error(exc) and range_end - range_start > LOG_SPLIT_MIN_BLOCK_SPAN:
+                midpoint = range_start + (range_end - range_start) // 2
+
+                ranges.append((midpoint + 1, range_end))
+                ranges.append((range_start, midpoint))
+
+                continue
+
+            LOGGER.debug(
+                "Failed to retrieve transfer logs for contract %s between blocks %s and %s.",
+                contract_address,
+                range_start,
+                range_end,
+                exc_info=exc,
+                extra=build_log_extra(
+                    blockchain=blockchain,
+                    chain_id_label=runtime.chain_id_label,
+                    contract=contract,
+                    additional={
+                        "from_block": range_start,
+                        "to_block": range_end,
+                    },
+                ),
+            )
+
+            return None
+
+        total_logs += len(logs)
+
+    return total_logs
+
+
+def _resolve_transfer_lookup_window(
+    contract: ContractConfig,
+    latest_block_number: int,
+) -> TransferWindow:
+    window_span = contract.transfer_lookback_blocks or DEFAULT_TRANSFER_LOOKBACK_BLOCKS
+    start_block = max(0, latest_block_number - window_span)
+
+    return TransferWindow(start_block=start_block, end_block=latest_block_number, span=window_span)
+
+
+def _contract_decimals_label(
+    contract: ContractConfig,
+    decimals_override: int | None = None,
+) -> str:
+    if decimals_override is not None:
+        return str(decimals_override)
+
+    if contract.decimals is not None:
+        return str(contract.decimals)
+
+    return str(DEFAULT_TOKEN_DECIMALS)
+
+
+def _is_response_too_big_error(exception: Exception) -> bool:
+    if not isinstance(exception, Web3RPCError):
+        return False
+
+    payload = exception.args[0] if exception.args else {}
+
+    if isinstance(payload, dict):
+        message = str(payload.get("message", "")).lower()
+
+        if "too big" in message or "exceeded max limit" in message:
+            return True
+
+    return False
+
+
+__all__ = [
+    "DEFAULT_TRANSFER_LOOKBACK_BLOCKS",
+    "clear_eth_metrics_for_account",
+    "clear_token_metrics_for_account",
+    "record_additional_contract_accounts",
+    "record_contract_balances",
+]
+
