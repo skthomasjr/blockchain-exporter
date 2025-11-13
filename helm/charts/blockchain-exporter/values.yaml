@@ -1,0 +1,178 @@
+# Default values for blockchain-exporter.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# This will set the replicaset count more information can be found here: https://kubernetes.io/docs/concepts/workloads/controllers/replicaset/
+replicaCount: 1
+
+# This sets the container image more information can be found here: https://kubernetes.io/docs/concepts/containers/images/
+image:
+  repository: ghcr.io/skthomasjr/blockchain-exporter
+  # Image pull policy. Valid values: Always, IfNotPresent, Never
+  # More information: https://kubernetes.io/docs/concepts/containers/images/#image-pull-policy
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: "latest"
+
+# This is for the secrets for pulling an image from a private repository more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
+imagePullSecrets: []
+# This is to override the chart name.
+nameOverride: ""
+fullnameOverride: ""
+
+# This section builds out the service account more information can be found here: https://kubernetes.io/docs/concepts/security/service-accounts/
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Automatically mount a ServiceAccount's API credentials?
+  automount: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+# This is for setting Kubernetes Annotations to a Pod.
+# For more information checkout: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/
+podAnnotations: {}
+# This is for setting Kubernetes Labels to a Pod.
+# For more information checkout: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
+podLabels: {}
+
+podSecurityContext: {}
+  # fsGroup: 2000
+
+securityContext: {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+# This is for setting up a service more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/
+service:
+  # This sets the service type more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types
+  type: ClusterIP
+  # Health check port (exposed on service, targets container port 8080)
+  healthPort: 8080
+  # Metrics port (exposed on service, targets container port 9100)
+  metricsPort: 9100
+
+resources: {}
+  # We usually recommend not to specify default resources and to leave this as a conscious
+  # choice for the user. This also increases chances charts run on environments with little
+  # resources, such as Minikube. If you do want to specify resources, uncomment the following
+  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  # limits:
+  #   cpu: 100m
+  #   memory: 128Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+# This is to setup the liveness, readiness, and startup probes more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
+# Startup probe is aggressive for fast startup detection. Readiness and liveness use standard intervals to reduce load.
+# Note: The probe port is automatically set from service.healthPort (8080) by the deployment template.
+livenessProbe:
+  httpGet:
+    path: /health/livez
+  initialDelaySeconds: 15
+  periodSeconds: 30
+  timeoutSeconds: 2
+  successThreshold: 1
+  failureThreshold: 3
+readinessProbe:
+  httpGet:
+    path: /health/readyz
+  initialDelaySeconds: 0
+  periodSeconds: 10
+  timeoutSeconds: 1
+  successThreshold: 1
+  failureThreshold: 3
+startupProbe:
+  httpGet:
+    path: /health/readyz
+  initialDelaySeconds: 0
+  periodSeconds: 1
+  timeoutSeconds: 1
+  successThreshold: 1
+  failureThreshold: 10
+
+# Content rendered into `/app/config/config.toml`.
+config:
+  toml: ""
+
+# Declarative blockchain configuration rendered into `config.toml` when provided.
+blockchains: []
+# - name: Example Chain
+#   rpc_url: https://example.rpc
+#   poll_interval: 1m
+#   accounts:
+#     - name: Example Account
+#       address: 0x123
+#   contracts:
+#     - name: Example Token
+#       address: 0xabc
+#       transfer_lookback_blocks: 5000
+#       accounts:
+#         - name: Token Holder
+#           address: 0xdef
+
+# Additional volumes on the output Deployment definition.
+volumes: []
+# - name: foo
+#   secret:
+#     secretName: mysecret
+#     optional: false
+
+# Additional volumeMounts on the output Deployment definition.
+volumeMounts: []
+# - name: foo
+#   mountPath: "/etc/foo"
+#   readOnly: true
+
+#
+# Non-secret environment variables to inject into the container.
+# Allows direct values or Kubernetes valueFrom sources (fieldRef, configMapKeyRef, etc.).
+#
+env: []
+# - name: LOG_LEVEL
+#   value: INFO
+# - name: POD_NAME
+#   valueFrom:
+#     fieldRef:
+#       fieldPath: metadata.name
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Environment variables to inject into the container for TOML config variable interpolation.
+# Supports both direct values (stored in a Kubernetes Secret) and references to existing Secrets.
+secrets: []
+# Direct values (for development/testing):
+# Values are automatically stored in a Kubernetes Secret named '<release-name>-secrets'.
+# - name: ETH_MAINNET_RPC_ENDPOINT
+#   value: https://eth-mainnet.example.com
+# Reference to existing Kubernetes Secret (for production):
+# - name: ETH_MAINNET_RPC_ENDPOINT
+#   secretRef:
+#     name: rpc-secrets
+#     key: eth-mainnet-url
+# - name: ETH_SEPOLIA_RPC_ENDPOINT
+#   secretRef:
+#     name: rpc-secrets
+#     key: eth-sepolia-url
+
+# TODO: Add these to the values.yaml file
+# configPath: ./config.toml
+# logColorEnabled: true
+# logFormat: text
+# logLevel: INFO
+# maxFailureBackoffSeconds: 900
+# pollDefaultInterval: 5m
+# readinessStaleThresholdSeconds: 300
+# rpcRequestTimeoutSeconds: 10.0

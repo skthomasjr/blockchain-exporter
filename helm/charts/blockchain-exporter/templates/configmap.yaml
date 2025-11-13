@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "blockchain-exporter.fullname" . }}-config
+  labels:
+    {{- include "blockchain-exporter.labels" . | nindent 4 }}
+data:
+  config.toml: |
+    {{- if .Values.config.toml }}
+    {{- .Values.config.toml | nindent 4 }}
+    {{- else if .Values.blockchains }}
+    {{- range $index, $blockchain := .Values.blockchains }}
+    {{- if gt $index 0 }}
+    {{- end }}
+
+    [[blockchains]]
+    name = "{{ $blockchain.name }}"
+    rpc_url = "{{ $blockchain.rpc_url }}"
+    {{- with $blockchain.poll_interval }}
+    poll_interval = "{{ . }}"
+    {{- end }}
+    {{- with $blockchain.transfer_lookback_blocks }}
+    transfer_lookback_blocks = {{ . }}
+    {{- end }}
+    {{- $accounts := $blockchain.accounts | default (list) }}
+    {{- if gt (len $accounts) 0 }}
+    {{- range $accountIndex, $account := $accounts }}
+    {{- if gt $accountIndex 0 }}
+    {{- end }}
+
+        [[blockchains.accounts]]
+        name = "{{ $account.name }}"
+        address = "{{ $account.address }}"
+    {{- with $account.is_contract }}
+        is_contract = {{ . }}
+    {{- end }}
+    {{- with $account.token_address }}
+        token_address = "{{ . }}"
+    {{- end }}
+    {{- end }}
+    {{- end }}
+    {{- $contracts := $blockchain.contracts | default (list) }}
+    {{- if gt (len $contracts) 0 }}
+    {{- if gt (len $accounts) 0 }}
+    {{- end }}
+    {{- range $contractIndex, $contract := $contracts }}
+    {{- if gt $contractIndex 0 }}
+    {{- end }}
+
+        [[blockchains.contracts]]
+        name = "{{ $contract.name }}"
+        address = "{{ $contract.address }}"
+    {{- with $contract.transfer_lookback_blocks }}
+        transfer_lookback_blocks = {{ . }}
+    {{- end }}
+    {{- with $contract.token_decimals }}
+        token_decimals = {{ . }}
+    {{- end }}
+    {{- $contractAccounts := $contract.accounts | default (list) }}
+    {{- if gt (len $contractAccounts) 0 }}
+    {{- range $contractAccountIndex, $contractAccount := $contractAccounts }}
+    {{- if gt $contractAccountIndex 0 }}
+    {{- end }}
+
+            [[blockchains.contracts.accounts]]
+            name = "{{ $contractAccount.name }}"
+            address = "{{ $contractAccount.address }}"
+    {{- end }}
+    {{- end }}
+    {{- end }}
+    {{- end }}
+    {{- end }}
+    {{- else }}
+    {{- "# No blockchain configuration provided." | nindent 4 }}
+    {{- end }}

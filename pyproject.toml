@@ -1,0 +1,47 @@
+[project]
+name = "blockchain-exporter"
+version = "0.1.0"
+description = "Blockchain Prometheus metrics exporter"
+authors = [
+    {name = "Scott K. Thomas, Jr."}
+]
+readme = "README.md"
+requires-python = "^3.11"
+dependencies = [
+    "fastapi (>=0.121.1,<0.122.0)",
+    "uvicorn (>=0.38.0,<0.39.0)",
+    "prometheus-client (>=0.23.1,<0.24.0)",
+    "web3 (>=7.14.0,<8.0.0)",
+    "python-dotenv (>=1.2.1,<2.0.0)"
+]
+
+[project.scripts]
+"blockchain-exporter" = "blockchain_exporter.main:run"
+
+[tool.poetry]
+package-mode = false
+packages = [{include = "blockchain_exporter", from = "src"}]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "ruff (>=0.14.4,<0.15.0)",
+    "pytest (>=9.0.0,<10.0.0)",
+    "pytest-cov (>=6.0.0,<7.0.0)",
+    "mdformat (>=0.7.20,<0.8.0)",
+]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore::DeprecationWarning:websockets.legacy",
+]
+addopts = [
+    "--cov=blockchain_exporter",
+    "--cov-report=term-missing",
+    "--cov-report=xml",
+    "--cov-report=html",
+]
