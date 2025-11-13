@@ -1,0 +1,95 @@
+# Blockchain Exporter – Reference Prompt & Architecture Snapshot
+
+Use this file when you need to brief an AI assistant about the current state of the project. The sections below capture the architecture, conventions, and open work so you can copy/paste (or link) the right context quickly.
+
+## 1. System Overview
+
+- **Purpose**: FastAPI-based Prometheus exporter that polls Ethereum-compatible chains (mainnet & testnets) for account/contract metrics.
+- **Entry Points**:
+  - `blockchain_exporter.main:run()` (used by Docker/CLI) → launches Uvicorn with `create_app()`.
+  - `blockchain_exporter.app:create_app(metrics=...)` builds the FastAPI instance, configures logging, loads config, and starts async pollers via lifespan.
+- **Key Runtime Modules**:
+  - `config.py`: loads `config.toml`, supports env interpolation, defines `BlockchainConfig`, `ContractConfig`, etc.
+  - `settings.py`: centralizes environment vars (logging, poller intervals, health thresholds, metrics port, config path resolution).
+  - `runtime_settings.py`: combines environment-driven `AppSettings`, resolved `config.toml` blockchains, and the concrete `config_path` into a cached `RuntimeSettings` bundle for dependency injection/testing.
+  - `metrics.py`: defines `MetricsBundle` (exporter/account/contract/chain gauges), cache state (`CHAIN_*` dicts), helpers (`record_poll_success`, `reset_chain_metrics`, etc.), and `create_metrics()/get_metrics()/set_metrics()` for dependency injection.
+  - `poller/`: orchestrates background polling.
+    - `control.py`: async loop with backoff, calls `collect_blockchain_metrics()` (to-thread).
+    - `collect.py`: synchronous core using `ChainRuntimeContext` (config, RPC client, metrics bundle, chain state) to update gauges.
+    - `intervals.py`: polling cadence + Web3 HTTPProvider factory.
+  - `collectors.py`: token & contract metric collection, log chunking, default fallbacks for ERC-721/20 quirks.
+  - `rpc.py`: `RpcClient` wrapper with retry/backoff for Web3 calls (`get_balance`, `get_logs`, etc.).
+  - `logging.py`: structured logging helpers (`build_log_extra`, `log_duration`).
+  - `health.py`: readiness/liveness + metrics payload formatting.
+  - `api.py`: `/health`, `/health/details`, `/health/livez`, `/health/readyz`, `/metrics` endpoints.
+
+## 2. Data Flow (Polling Lifecycle)
+
+1. Lifespan startup loads configs, marks exporter up, fires initial `collect_blockchain_metrics` per chain, and schedules `poll_blockchain` tasks.
+1. Each poll cycle (`poll_blockchain`) runs `collect_chain_metrics_sync` in a thread:
+   - Build/resolve `ChainRuntimeContext` (`BlockchainConfig`, chain ID, `RpcClient`, metrics bundle, label caches).
+   - Record latest block, finalized block, and time-since metrics.
+   - Update configured account balances, token balances, additional contract accounts.
+   - Update contract metrics: ETH balance, raw/normalized token supply, transfer counts with chunked `eth_getLogs`.
+   - Cache label sets to support metric cleanup.
+   - Call `record_poll_success` or `record_poll_failure` to update health caches and gauges.
+1. `/metrics` checks readiness; if any chain is fresh & healthy the Prometheus payload is returned (with scientific notation normalized).
+
+## 3. Configuration & Environment
+
+- **Config file**: `config.toml` with `[blockchains]` array; each chain lists `rpc_url`, `poll_interval`, `contracts`, `accounts`, `transfer_lookback_blocks`, etc. `${ENV}` interpolation is applied before parsing.
+- **Environment**:
+  - `.env` autoloaded via `dotenv` for RPC URLs and other secrets.
+  - Key vars documented in README & `settings.py`: `LOG_LEVEL`, `LOG_FORMAT`, `POLL_DEFAULT_INTERVAL`, `RPC_REQUEST_TIMEOUT_SECONDS`, `READINESS_STALE_THRESHOLD_SECONDS`, `MAX_FAILURE_BACKOFF_SECONDS`, `HEALTH_PORT`, `METRICS_PORT`, `BLOCKCHAIN_EXPORTER_CONFIG_PATH`.
+- **Runtime settings**: `get_runtime_settings()` produces a cached `RuntimeSettings` (environment settings + blockchain configs + resolved config path); `ApplicationContext` exposes `context.settings` and `context.blockchains` via this bundle.
+- **Kubernetes Deployment (Helm)**:
+  - Helm chart in `helm/charts/blockchain-exporter/` manages ConfigMap, Secret, Deployment, Service, and ServiceAccount resources.
+  - Chart generates `config.toml` from declarative `blockchains` configuration in `values.yaml`, or uses a custom `config.toml` if provided.
+  - Supports both direct secret values (stored in a Kubernetes Secret) and references to existing Secrets via `secretRef`.
+  - Environment variables are injected for TOML variable interpolation (e.g., `${ETH_MAINNET_RPC_ENDPOINT}`) and additional non-secret variables (including `valueFrom` sources) can be defined via `.Values.env`.
+  - Default probe settings optimized for fast startup (startup: 1s period, readiness/liveness: relaxed intervals).
+  - Commands: `make helm-install [VALUES=path/to/values.yaml]`, `make helm-uninstall`, `make lint-helm`.
+- **Tooling**:
+  - `make print-config [CONFIG=path]` → pretty JSON of resolved settings with RPC URLs masked (use CLI `--show-secrets` to reveal).
+  - `make validate-config [CONFIG=path]` → run TOML validation.
+  - `make run` / `make lint` / `make lint-md` / `make lint-docker` / `make lint-helm` / `make test` / `make docker-build` / `make docker-run` / `make helm-install` / `make helm-uninstall`.
+  - Logging options: `LOG_FORMAT` (`text`/`json`) and `LOG_COLOR_ENABLED` (defaults to true) control formatter style; colors are suppressed automatically when the toggle is false.
+  - Cleanup macro: `make lint && make test && make validate-config` mirrors the CI pipeline (Ruff + Markdown + Hadolint + Helm, pytest with coverage ≥85%, config validation).
+
+## 4. Logging & Metrics Conventions
+
+- Logging uses structured extras; `rpc_url` intentionally excluded. `log_duration` wraps expensive operations.
+- Metrics are grouped (`ExporterMetrics`, `AccountMetrics`, `ContractMetrics`, `ChainMetrics`). All interactions go through an injected `MetricsBundle` for testability.
+- Label caches (`ChainMetricLabelState`) avoid stale series; helper functions ensure cleanup on chain ID changes/failures.
+- JSON logs keep `color_message` for completeness; structured text logs color levels/timestamps unless `LOG_COLOR_ENABLED=false`.
+- Core modules use concise docstrings to describe contexts, factories, and pollers for quick orientation.
+
+## 5. Outstanding Improvements (from `docs/AI_TODO.md`)
+
+- _No open tasks. Add the next highest-impact item when identified._
+
+## 6. Known Testing & Operational Considerations
+
+- Pytest suite covers config validation, collectors (including error branches), CLI, metrics helpers, poller intervals, and FastAPI endpoints (see README coverage summary). Remaining gaps are tracked in TODO above.
+- `collect_chain_metrics_sync` accepts injected `rpc_client`/`metrics`, but will construct defaults when omitted.
+- Background pollers run indefinitely; lifespan cancels and gathers tasks on shutdown and resets `ApplicationContext`.
+- Log chunking thresholds (`LOG_MAX_CHUNK_SIZE`, `LOG_SPLIT_MIN_BLOCK_SPAN`) guard against “response too big” RPC errors; retry/backoff is handled by `RpcClient`.
+
+## 7. Reference Prompt Template
+
+Use or adapt the prompt below when engaging an assistant in future sessions:
+
+```
+You are helping with the "blockchain-exporter" FastAPI project that exposes Prometheus metrics for Ethereum-family chains.
+Key facts:
+- Entry point `blockchain_exporter.app:create_app(metrics=...)` builds the app; `poller/control.py` manages async polling; `collectors.py` updates Prometheus gauges via an injected `MetricsBundle`.
+- Config lives in `config.toml`, loaded through `config.py` with env interpolation; settings are centralized in `settings.py`.
+- Metrics are grouped in `metrics.py` (`ExporterMetrics`, `AccountMetrics`, `ContractMetrics`, `ChainMetrics`). Health state is tracked via `CHAIN_HEALTH_STATUS` / `CHAIN_LAST_SUCCESS`.
+- RPC access goes through `RpcClient` in `rpc.py` with retry/backoff; token transfers use chunked `eth_getLogs`.
+- Health endpoints and readiness gating are implemented in `api.py` / `health.py`.
+- Kubernetes deployment via Helm chart in `helm/charts/blockchain-exporter/` (ConfigMap, Secret, Deployment, Service, ServiceAccount). Chart generates `config.toml` from declarative `blockchains` configuration or uses custom `config.toml`. Supports direct secret values and references to existing Secrets via `secretRef`. Environment variables are injected for TOML variable interpolation, and additional non-secret variables (including `valueFrom` sources) can be defined via `.Values.env`. Health endpoints are on port 8080, metrics on port 9100. Probes target the health port (8080).
+Current focus (see TODO.md): define next enhancements based on production feedback; existing tooling (validate-config, coverage, CI, Helm) is in place.
+Please follow the existing logging and metrics patterns (no logging of secrets, keep Prometheus label ordering consistent) and respect the user's preference for blank lines between variable declarations. Avoid reformatting unrelated code.
+```
+
+Copy this block into your requests (feel free to trim) so the assistant jumps in with full context.
