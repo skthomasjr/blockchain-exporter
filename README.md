@@ -105,6 +105,22 @@ The application includes a Helm chart for Kubernetes deployment. The chart manag
 - `make helm-install [VALUES=path/to/values.yaml]`: Install or upgrade the chart in the `blockchain-exporter` namespace.
 - `make helm-uninstall`: Uninstall the chart from the `blockchain-exporter` namespace.
 - `make lint-helm`: Lint the Helm chart templates.
+- `make helm-package VERSION=<version>`: Package the Helm chart locally (e.g., `make helm-package VERSION=0.1.0`).
+
+### Installing from OCI Registry
+
+After a release, the Helm chart is available at `ghcr.io/skthomasjr/helm-charts/blockchain-exporter`:
+
+```bash
+# Add the OCI registry as a Helm repository (one-time setup)
+helm registry login ghcr.io -u skthomasjr
+
+# Install from OCI registry
+helm install blockchain-exporter oci://ghcr.io/skthomasjr/helm-charts/blockchain-exporter --version 0.1.0
+
+# Or upgrade an existing installation
+helm upgrade blockchain-exporter oci://ghcr.io/skthomasjr/helm-charts/blockchain-exporter --version 0.1.0
+```
 
 ### Configuration
 
@@ -213,26 +229,33 @@ Coverage artifacts are written to `coverage.xml` (for CI) and `htmlcov/` when ru
 - Inspect `coverage.xml` or open `htmlcov/index.html` to spot untested deltas; add tests for any new gaps before proceeding.
 - Push the branch and confirm the GitHub Actions workflow succeeds (lint, tests with coverage, config validation) before tagging or deploying.
 - Perform a final smoke test against the release candidate (fast `/health` and `/metrics` probes) to confirm runtime wiring remains sound.
-- **Create a release tag**: After all checks pass, create and push a version tag (e.g., `v0.0.1`) to trigger the Docker image build and push:
-  ```bash
-  git tag v0.0.1
-  git push origin v0.0.1
-  ```
+- **Create a release**: After all checks pass, create a release in one of two ways:
+  1. **Via GitHub UI** (recommended): Go to Releases → "Draft a new release" → Create tag `v0.0.1` → Publish release
+  2. **Via Git**: Create and push a version tag (e.g., `v0.0.1`) to trigger the Docker image build and push:
+     ```bash
+     git tag v0.0.1
+     git push origin v0.0.1
+     ```
 - **Verify Docker image**: After pushing the tag, the GitHub Actions workflow will automatically build and push the Docker image to `ghcr.io/skthomasjr/blockchain-exporter`. Check the Actions tab to confirm the image was published successfully.
-- **Make package public**: After the first release, make the Docker package public:
+- **Verify Helm chart**: The workflow will also package and push the Helm chart to `ghcr.io/skthomasjr/helm-charts/blockchain-exporter` with the same version as your tag.
+- **Make packages public**: After the first release, make both packages public:
   1. Go to your repository on GitHub
   2. Click on "Packages" in the right sidebar (or navigate to `https://github.com/skthomasjr?tab=packages`)
-  3. Click on `blockchain-exporter`
-  4. Click "Package settings"
-  5. Scroll to "Danger Zone" and click "Change visibility"
-  6. Select "Public" and confirm
+  3. For each package (`blockchain-exporter` Docker image and `helm-charts` Helm chart):
+     - Click on the package name
+     - Click "Package settings"
+     - Scroll to "Danger Zone" and click "Change visibility"
+     - Select "Public" and confirm
 
 The Docker image will be available at `ghcr.io/skthomasjr/blockchain-exporter` with tags matching your release versions (e.g., `v0.0.1`, `0.0.1`, `0.0`, `0`).
+
+The Helm chart will be available at `oci://ghcr.io/skthomasjr/helm-charts/blockchain-exporter` with versions matching your release tags (e.g., `0.0.1`).
 
 ### CI Expectations
 
 - GitHub Actions workflow runs `make lint` (Ruff, Markdown formatting, Hadolint), `make test` (pytest with coverage), and `make validate-config` on pushes to `main` and pull requests.
-- **Docker image build**: When you push a version tag (e.g., `v0.0.1`) to `main`, the workflow automatically builds and pushes the Docker image to GitHub Container Registry (`ghcr.io/skthomasjr/blockchain-exporter`).
+- **Docker image build**: When you publish a GitHub release or push a version tag (e.g., `v0.0.1`), the workflow automatically builds and pushes the Docker image to GitHub Container Registry (`ghcr.io/skthomasjr/blockchain-exporter`).
+- **Helm chart build**: The same release trigger also packages and pushes the Helm chart to the OCI registry (`oci://ghcr.io/skthomasjr/helm-charts/blockchain-exporter`).
 - Coverage gate: ensure the pytest TOTAL line stays at or above **85%** locally before pushing.
 - Treat `make lint && make test && make validate-config` as the local pre-push macro to replicate CI.
 
