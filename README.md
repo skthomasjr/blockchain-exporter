@@ -231,7 +231,7 @@ Coverage artifacts are written to `coverage.xml` (for CI) and `htmlcov/` when ru
 - Perform a final smoke test against the release candidate (fast `/health` and `/metrics` probes) to confirm runtime wiring remains sound.
 - **Create a release**: After all checks pass, create a release in one of two ways:
   1. **Via GitHub UI** (recommended): Go to Releases → "Draft a new release" → Create tag `v0.0.1` → Publish release
-  2. **Via Git**: Create and push a version tag (e.g., `v0.0.1`) to trigger the Docker image build and push:
+  1. **Via Git**: Create and push a version tag (e.g., `v0.0.1`) to trigger the Docker image build and push:
      ```bash
      git tag v0.0.1
      git push origin v0.0.1
@@ -240,8 +240,8 @@ Coverage artifacts are written to `coverage.xml` (for CI) and `htmlcov/` when ru
 - **Verify Helm chart**: The workflow will also package and push the Helm chart to `ghcr.io/skthomasjr/helm-charts/blockchain-exporter` with the same version as your tag.
 - **Make packages public**: After the first release, make both packages public:
   1. Go to your repository on GitHub
-  2. Click on "Packages" in the right sidebar (or navigate to `https://github.com/skthomasjr?tab=packages`)
-  3. For each package (`blockchain-exporter` Docker image and `helm-charts` Helm chart):
+  1. Click on "Packages" in the right sidebar (or navigate to `https://github.com/skthomasjr?tab=packages`)
+  1. For each package (`blockchain-exporter` Docker image and `helm-charts` Helm chart):
      - Click on the package name
      - Click "Package settings"
      - Scroll to "Danger Zone" and click "Change visibility"
