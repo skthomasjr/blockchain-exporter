@@ -1,4 +1,4 @@
-.PHONY: run lint lint-md lint-docker lint-helm test validate-config print-config helm-install helm-uninstall docker-build docker-run docker-cleanup clean kill-ports
+.PHONY: run lint lint-md lint-docker lint-helm test validate-config print-config helm-install helm-uninstall helm-package docker-build docker-run docker-cleanup clean kill-ports
 
 run:
 	pipx run poetry run python -m blockchain_exporter.main
@@ -56,6 +56,20 @@ helm-uninstall:
 		exit 1; \
 	fi
 
+helm-package:
+	@if command -v helm >/dev/null 2>&1; then \
+		if [ -z "$(VERSION)" ]; then \
+			echo "VERSION is required. Usage: make helm-package VERSION=0.1.0"; \
+			exit 1; \
+		fi; \
+		cd helm/charts/blockchain-exporter && \
+		helm package . --version $(VERSION) --app-version $(VERSION) && \
+		echo "Chart packaged: blockchain-exporter-$(VERSION).tgz"; \
+	else \
+		echo "helm is required to package charts. Install helm (https://helm.sh/docs/intro/install/) and rerun."; \
+		exit 1; \
+	fi
+
 test:
 	-pipx run poetry run pytest || \ 
 		{ status=$$?; [ $$status -eq 5 ] && exit 0 || exit $$status; }
@@ -81,3 +95,4 @@ clean:
 	rm -rf .coverage* coverage.xml htmlcov/
 	rm -rf .pytest_cache/ .ruff_cache/ .mypy_cache/
 	rm -rf dist/ build/
+	rm -rf helm/charts/blockchain-exporter/*.tgz
