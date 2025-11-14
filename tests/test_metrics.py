@@ -95,10 +95,16 @@ def test_reset_chain_metrics_zeros_gauges(blockchain: BlockchainConfig) -> None:
 
     metrics.chain.time_since_last_block.labels(*labels).set(5)
 
+    metrics.chain.configured_accounts_count.labels(*labels).set(10)
+
+    metrics.chain.configured_contracts_count.labels(*labels).set(5)
+
     reset_chain_metrics(blockchain, "1")
 
     assert metrics.chain.head_block_number._metrics[labels]._value.get() == 0.0
     assert metrics.chain.time_since_last_block._metrics[labels]._value.get() == 0.0
+    assert metrics.chain.configured_accounts_count._metrics[labels]._value.get() == 0.0
+    assert metrics.chain.configured_contracts_count._metrics[labels]._value.get() == 0.0
 
 
 def test_clear_cached_metrics_removes_labels(blockchain: BlockchainConfig) -> None:
@@ -122,6 +128,10 @@ def test_remove_chain_metrics_for_label_clears_gauges(blockchain: BlockchainConf
 
     metrics.chain.head_block_number.labels(*labels).set(100)
 
+    metrics.chain.configured_accounts_count.labels(*labels).set(10)
+
+    metrics.chain.configured_contracts_count.labels(*labels).set(5)
+
     CHAIN_HEALTH_STATUS[labels] = True
     CHAIN_LAST_SUCCESS[labels] = 200.0
 
@@ -129,6 +139,8 @@ def test_remove_chain_metrics_for_label_clears_gauges(blockchain: BlockchainConf
 
     assert labels not in metrics.chain.poll_success._metrics
     assert labels not in metrics.chain.head_block_number._metrics
+    assert labels not in metrics.chain.configured_accounts_count._metrics
+    assert labels not in metrics.chain.configured_contracts_count._metrics
     assert labels not in CHAIN_HEALTH_STATUS
     assert labels not in CHAIN_LAST_SUCCESS
 

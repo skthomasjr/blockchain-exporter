@@ -41,6 +41,7 @@ dev = [
 filterwarnings = [
     "ignore::DeprecationWarning:websockets.legacy",
 ]
+pythonpath = ["src"]
 addopts = [
     "--cov=blockchain_exporter",
     "--cov-report=term-missing",

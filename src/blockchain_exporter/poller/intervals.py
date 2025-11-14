@@ -110,12 +110,12 @@ DEFAULT_POLL_INTERVAL_SECONDS = (
 
 
 __all__ = [
-    "DEFAULT_POLL_INTERVAL",
-    "DEFAULT_POLL_INTERVAL_SECONDS",
-    "DEFAULT_RPC_TIMEOUT_SECONDS",
-    "MAX_FAILURE_BACKOFF_SECONDS",
     "create_web3_client",
     "determine_poll_interval_seconds",
     "determine_rpc_timeout_seconds",
     "parse_duration_to_seconds",
+    "DEFAULT_POLL_INTERVAL",
+    "DEFAULT_POLL_INTERVAL_SECONDS",
+    "DEFAULT_RPC_TIMEOUT_SECONDS",
+    "MAX_FAILURE_BACKOFF_SECONDS",
 ]

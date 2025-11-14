@@ -1,7 +1,7 @@
 .PHONY: run lint lint-md lint-docker lint-helm test validate-config print-config helm-install helm-uninstall helm-package docker-build docker-run docker-cleanup clean kill-ports
 
 run:
-	pipx run poetry run python -m blockchain_exporter.main
+	pipx run poetry run python run.py
 
 kill-ports:
 	@echo "Killing processes using ports 8080 and 9100..."
@@ -75,10 +75,10 @@ test:
 		{ status=$$?; [ $$status -eq 5 ] && exit 0 || exit $$status; }
 
 validate-config:
-	pipx run poetry run python -m blockchain_exporter.cli $(if $(CONFIG),--config $(CONFIG),)
+	pipx run poetry run python validate_config.py $(if $(CONFIG),--config $(CONFIG),)
 
 print-config:
-	pipx run poetry run python -m blockchain_exporter.cli --print-resolved $(if $(CONFIG),--config $(CONFIG),)
+	pipx run poetry run python print_config.py $(if $(CONFIG),--config $(CONFIG),)
 
 docker-build:
 	docker build -t blockchain-exporter .

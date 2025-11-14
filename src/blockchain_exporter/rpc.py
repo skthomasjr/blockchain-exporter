@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Literal, Protocol, TypedDict, runtime_checkable
 
 from .config import BlockchainConfig
 from .logging import get_logger
@@ -15,13 +15,73 @@ RPC_MAX_RETRIES = 3
 RPC_INITIAL_BACKOFF_SECONDS = 0.5
 RPC_MAX_BACKOFF_SECONDS = 5.0
 
+# Type aliases for block identifiers
+BlockIdentifier = int | Literal["latest", "pending", "earliest", "finalized", "safe"]
+
+
+class BlockData(Protocol):
+    """Block data structure returned by eth_getBlock.
+
+    This Protocol defines the interface for block data used by the exporter.
+    web3.py returns objects with attributes matching this protocol.
+    """
+
+    number: int
+    timestamp: int
+    # Additional fields may exist but are not required for the exporter
+
+
+class LogEntryDict(TypedDict, total=False):
+    """Log entry dictionary structure returned by eth_getLogs."""
+
+    address: str
+    topics: list[str]
+    data: str
+    blockNumber: int
+    blockHash: str
+    transactionHash: str
+    transactionIndex: int
+    logIndex: int
+    removed: bool
+
+
+class GetLogsParams(TypedDict, total=False):
+    """Parameters for eth_getLogs request."""
+
+    fromBlock: int | Literal["latest", "pending", "earliest", "finalized", "safe"]
+    toBlock: int | Literal["latest", "pending", "earliest", "finalized", "safe"]
+    address: str | list[str]
+    topics: list[str | list[str] | None] | None
+
+
+@runtime_checkable
+class Web3EthProtocol(Protocol):
+    """Protocol for Web3 eth module."""
+
+    @property
+    def chain_id(self) -> int: ...
+
+    def get_balance(self, address: str, block_identifier: BlockIdentifier | None = None) -> int: ...
+
+    def get_code(self, address: str, block_identifier: BlockIdentifier | None = None) -> bytes: ...
+
+    def get_block(
+        self,
+        block_identifier: BlockIdentifier,
+        full_transactions: bool = False,
+    ) -> BlockData: ...
+
+    def get_logs(self, filter_params: GetLogsParams) -> list[LogEntryDict]: ...
+
 
 @runtime_checkable
 class Web3ProviderProtocol(Protocol):
+    """Protocol for Web3 provider interface."""
+
     def is_connected(self) -> bool: ...
 
     @property
-    def eth(self) -> Any: ...
+    def eth(self) -> Web3EthProtocol: ...
 
 
 @runtime_checkable
@@ -60,22 +120,22 @@ class RpcClientProtocol(Protocol):
 
     def get_block(
         self,
-        block_identifier: Any,
+        block_identifier: BlockIdentifier,
         *,
         description: str | None = None,
         max_attempts: int | None = None,
         extra: dict[str, Any] | None = None,
         full_transactions: bool = False,
-    ) -> Any: ...
+    ) -> BlockData: ...
 
     def get_logs(
         self,
-        params: dict[str, Any],
+        params: GetLogsParams,
         *,
         description: str | None = None,
         max_attempts: int | None = None,
         extra: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]: ...
+    ) -> list[LogEntryDict]: ...
 
     def call_contract_function(
         self,
@@ -211,38 +271,42 @@ class RpcClient:
 
     def get_block(
         self,
-        block_identifier: Any,
+        block_identifier: BlockIdentifier,
         *,
         description: str | None = None,
         max_attempts: int | None = None,
         extra: dict[str, Any] | None = None,
         full_transactions: bool = False,
-    ) -> Any:
+    ) -> BlockData:
         desc = description or f"eth_getBlock({block_identifier!r})"
-        return execute_with_retries(
+        result = execute_with_retries(
             lambda: self._web3.eth.get_block(block_identifier, full_transactions=full_transactions),
             desc,
             self._blockchain,
             max_attempts=max_attempts,
             context_extra=extra,
         )
+        # web3.py returns objects with attributes matching BlockData protocol
+        return result  # type: ignore[return-value]
 
     def get_logs(
         self,
-        params: dict[str, Any],
+        params: GetLogsParams,
         *,
         description: str | None = None,
         max_attempts: int | None = None,
         extra: dict[str, Any] | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[LogEntryDict]:
         desc = description or "eth_getLogs"
-        return execute_with_retries(
+        result = execute_with_retries(
             lambda: self._web3.eth.get_logs(params),
             desc,
             self._blockchain,
             max_attempts=max_attempts,
             context_extra=extra,
         )
+        # web3.py returns a list of dict-like objects matching LogEntryDict structure
+        return result  # type: ignore[return-value]
 
     def call_contract_function(
         self,
@@ -266,8 +330,13 @@ class RpcClient:
 
 
 __all__ = [
+    "BlockData",
+    "BlockIdentifier",
+    "GetLogsParams",
+    "LogEntryDict",
     "RpcClient",
     "RpcClientProtocol",
+    "Web3EthProtocol",
     "Web3ProviderProtocol",
     "execute_with_retries",
     "RPC_INITIAL_BACKOFF_SECONDS",

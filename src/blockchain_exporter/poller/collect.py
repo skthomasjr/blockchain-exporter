@@ -171,12 +171,26 @@ def collect_chain_metrics_sync(
 
 def _record_chain_health_metrics(runtime: ChainRuntimeContext) -> int | None:
     metric_labels = (runtime.config.name, runtime.chain_id_label)
+    blockchain = runtime.config
+
+    # Record configuration complexity metrics
+    total_contracts = len(blockchain.contracts)
+    total_accounts = len(blockchain.accounts) + sum(
+        len(contract.accounts) for contract in blockchain.contracts
+    )
+
+    runtime.metrics.chain.configured_contracts_count.labels(*metric_labels).set(
+        float(total_contracts)
+    )
+    runtime.metrics.chain.configured_accounts_count.labels(*metric_labels).set(
+        float(total_accounts)
+    )
 
     try:
         latest_block = runtime.rpc.get_block(
             "latest",
             extra=build_log_extra(
-                blockchain=runtime.config,
+                blockchain=blockchain,
                 chain_id_label=runtime.chain_id_label,
             ),
         )
@@ -201,10 +215,10 @@ def _record_chain_health_metrics(runtime: ChainRuntimeContext) -> int | None:
     except Exception as exc:  # noqa: BLE001
         LOGGER.warning(
             "Failed to collect latest block metrics for %s.",
-            runtime.config.name,
+            blockchain.name,
             exc_info=exc,
             extra=build_log_extra(
-                blockchain=runtime.config,
+                blockchain=blockchain,
                 chain_id_label=runtime.chain_id_label,
             ),
         )
@@ -221,7 +235,7 @@ def _record_chain_health_metrics(runtime: ChainRuntimeContext) -> int | None:
         finalized_block = runtime.rpc.get_block(
             "finalized",
             extra=build_log_extra(
-                blockchain=runtime.config,
+                blockchain=blockchain,
                 chain_id_label=runtime.chain_id_label,
             ),
         )
@@ -234,10 +248,10 @@ def _record_chain_health_metrics(runtime: ChainRuntimeContext) -> int | None:
     except Exception as exc:  # noqa: BLE001
         LOGGER.debug(
             "RPC endpoint did not return finalized block for %s.",
-            runtime.config.name,
+            blockchain.name,
             exc_info=exc,
             extra=build_log_extra(
-                blockchain=runtime.config,
+                blockchain=blockchain,
                 chain_id_label=runtime.chain_id_label,
             ),
         )
