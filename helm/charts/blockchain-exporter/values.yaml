@@ -136,9 +136,39 @@ volumeMounts: []
 # Non-secret environment variables to inject into the container.
 # Allows direct values or Kubernetes valueFrom sources (fieldRef, configMapKeyRef, etc.).
 #
+# Application settings that can be configured via environment variables:
+# - LOG_LEVEL: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL). Default: INFO
+# - LOG_FORMAT: Logging format (text, json). Default: text
+# - LOG_COLOR_ENABLED: Enable colored output (true/false). Default: true
+# - POLL_DEFAULT_INTERVAL: Default polling interval for blockchains without explicit poll_interval (e.g., "5m", "10s", "1h"). Default: 5m
+# - RPC_REQUEST_TIMEOUT_SECONDS: Timeout for RPC requests in seconds. Default: 10.0
+# - MAX_FAILURE_BACKOFF_SECONDS: Maximum backoff delay after consecutive failures in seconds. Default: 900
+# - READINESS_STALE_THRESHOLD_SECONDS: Threshold for marking chains as stale in readiness checks (seconds). Default: 300
+# - HEALTH_PORT: Port for health endpoints. Default: 8080
+# - METRICS_PORT: Port for metrics endpoint. Default: 9100
+# - BLOCKCHAIN_EXPORTER_CONFIG_PATH: Path to config.toml file or directory containing it. Default: ./config.toml
+#
 env: []
 # - name: LOG_LEVEL
 #   value: INFO
+# - name: LOG_FORMAT
+#   value: json
+# - name: LOG_COLOR_ENABLED
+#   value: "false"
+# - name: POLL_DEFAULT_INTERVAL
+#   value: "10m"
+# - name: RPC_REQUEST_TIMEOUT_SECONDS
+#   value: "15.0"
+# - name: MAX_FAILURE_BACKOFF_SECONDS
+#   value: "1200"
+# - name: READINESS_STALE_THRESHOLD_SECONDS
+#   value: "600"
+# - name: HEALTH_PORT
+#   value: "8080"
+# - name: METRICS_PORT
+#   value: "9100"
+# - name: BLOCKCHAIN_EXPORTER_CONFIG_PATH
+#   value: "/app/config/config.toml"
 # - name: POD_NAME
 #   valueFrom:
 #     fieldRef:
@@ -167,12 +197,3 @@ secrets: []
 #     name: rpc-secrets
 #     key: eth-sepolia-url
 
-# TODO: Add these to the values.yaml file
-# configPath: ./config.toml
-# logColorEnabled: true
-# logFormat: text
-# logLevel: INFO
-# maxFailureBackoffSeconds: 900
-# pollDefaultInterval: 5m
-# readinessStaleThresholdSeconds: 300
-# rpcRequestTimeoutSeconds: 10.0

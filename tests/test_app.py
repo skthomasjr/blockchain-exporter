@@ -102,7 +102,9 @@ async def test_lifespan_handles_missing_config(monkeypatch: pytest.MonkeyPatch, 
     async def _no_op_poll(*args: Any, **kwargs: Any) -> None:
         await asyncio.sleep(0)
 
-    monkeypatch.setattr(app_module, "poll_blockchain", _no_op_poll)
+    from blockchain_exporter.poller import control as poller_control_module
+
+    monkeypatch.setattr(poller_control_module, "poll_blockchain", _no_op_poll)
 
     app = FastAPI(lifespan=_lifespan)
 
@@ -169,7 +171,9 @@ async def test_lifespan_starts_polling_tasks(monkeypatch: pytest.MonkeyPatch) ->
             raise
 
     monkeypatch.setattr(app_module, "get_application_context", lambda: context)
-    monkeypatch.setattr(app_module, "poll_blockchain", _waiting_poll)
+    from blockchain_exporter.poller import control as poller_control_module
+
+    monkeypatch.setattr(poller_control_module, "poll_blockchain", _waiting_poll)
 
     app = FastAPI(lifespan=_lifespan)
 

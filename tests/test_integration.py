@@ -84,7 +84,9 @@ def mocked_client(monkeypatch) -> tuple[TestClient, BlockchainConfig]:
         "blockchain_exporter.poller.control.poll_blockchain",
         _fake_poll_blockchain,
     )
-    monkeypatch.setattr(app_module, "poll_blockchain", _fake_poll_blockchain)
+    from blockchain_exporter.poller import control as poller_control_module
+
+    monkeypatch.setattr(poller_control_module, "poll_blockchain", _fake_poll_blockchain)
 
     app = create_app(context=context)
 

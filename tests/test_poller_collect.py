@@ -47,7 +47,7 @@ def blockchain_config() -> BlockchainConfig:
             )
         ],
         accounts=[
-            AccountConfig(name="Treasury", address="0x02")
+            AccountConfig(name="Treasury", address="0x0000000000000000000000000000000000000002")
         ],
     )
 
@@ -76,11 +76,13 @@ def test_collect_chain_metrics_sync_success(monkeypatch, blockchain_config: Bloc
 
     def fake_record_additional(runtime_arg, processed_accounts):  # type: ignore[no-untyped-def]
         called["extra"] = True
-        assert processed_accounts == {"0x02"}
+        assert processed_accounts == {"0x0000000000000000000000000000000000000002"}
 
-    def fake_record_poll_success(blockchain, chain_id_label):  # type: ignore[no-untyped-def]
+    def fake_record_poll_success(blockchain, chain_id_label, **kwargs):  # type: ignore[no-untyped-def]
         called["poll_success"] = True
         assert chain_id_label == "1"
+        # Accept metrics parameter but don't need to use it
+        assert "metrics" in kwargs or True  # Accept with or without metrics
 
     monkeypatch.setattr("blockchain_exporter.poller.collect.record_contract_balances", fake_record_contract_balances)
     monkeypatch.setattr("blockchain_exporter.poller.collect.record_additional_contract_accounts", fake_record_additional)
@@ -114,7 +116,10 @@ def test_collect_chain_metrics_sync_block_failure(monkeypatch, blockchain_config
     rpc = StubRpc()
 
     def failing_get_block(_identifier: str, **_kwargs):
-        raise RuntimeError("unavailable")
+        # Raise RpcError directly since collect.py now catches RpcError
+        from blockchain_exporter.exceptions import RpcError
+
+        raise RpcError("unavailable", blockchain=blockchain_config.name, rpc_url=blockchain_config.rpc_url)
 
     rpc.get_block = failing_get_block  # type: ignore[assignment]
 

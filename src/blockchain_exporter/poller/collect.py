@@ -47,7 +47,7 @@ def collect_chain_metrics_sync(
             extra=build_log_extra(blockchain=blockchain),
         )
 
-        record_poll_failure(blockchain)
+        record_poll_failure(blockchain, metrics=metrics)
 
         return False
 
@@ -59,7 +59,7 @@ def collect_chain_metrics_sync(
             extra=build_log_extra(blockchain=blockchain),
         )
 
-        record_poll_failure(blockchain)
+        record_poll_failure(blockchain, metrics=metrics)
 
         return False
 
@@ -70,7 +70,7 @@ def collect_chain_metrics_sync(
     runtime = ChainRuntimeContext(
         config=blockchain,
         chain_id_label=chain_id_label,
-        rpc=rpc_client or RpcClient(web3_client, blockchain),
+        rpc=rpc_client or RpcClient(web3_client, blockchain, chain_id_label=chain_id_label),
         metrics=metrics_bundle,
         chain_state=ChainMetricLabelState(chain_id_label=chain_id_label),
     )
@@ -80,7 +80,7 @@ def collect_chain_metrics_sync(
     latest_block_number = _record_chain_health_metrics(runtime)
 
     if latest_block_number is None:
-        record_poll_failure(blockchain, chain_id_label)
+        record_poll_failure(blockchain, chain_id_label, metrics=runtime.metrics)
 
         return False
 
@@ -94,6 +94,10 @@ def collect_chain_metrics_sync(
     processed_accounts: set[str] = set()
 
     for account in blockchain.accounts:
+        # Skip disabled accounts (defensive check, though they should be filtered during parsing)
+        if not account.enabled:
+            continue
+
         account_labels = runtime.account_labels(account)
 
         processed_accounts.add(account_labels.account_address.lower())
@@ -165,7 +169,7 @@ def collect_chain_metrics_sync(
     record_additional_contract_accounts(runtime, processed_accounts)
 
     update_chain_label_cache(blockchain, runtime.chain_state)
-    record_poll_success(blockchain, runtime.chain_state.chain_id_label)
+    record_poll_success(blockchain, runtime.chain_state.chain_id_label, metrics=runtime.metrics)
     return True
 
 
@@ -173,18 +177,16 @@ def _record_chain_health_metrics(runtime: ChainRuntimeContext) -> int | None:
     metric_labels = (runtime.config.name, runtime.chain_id_label)
     blockchain = runtime.config
 
-    # Record configuration complexity metrics
-    total_contracts = len(blockchain.contracts)
-    total_accounts = len(blockchain.accounts) + sum(
-        len(contract.accounts) for contract in blockchain.contracts
+    # Record configuration complexity metrics (only count enabled items)
+    total_contracts = sum(1 for contract in blockchain.contracts if contract.enabled)
+    total_accounts = sum(1 for account in blockchain.accounts if account.enabled) + sum(
+        sum(1 for account in contract.accounts if account.enabled)
+        for contract in blockchain.contracts
+        if contract.enabled
     )
 
-    runtime.metrics.chain.configured_contracts_count.labels(*metric_labels).set(
-        float(total_contracts)
-    )
-    runtime.metrics.chain.configured_accounts_count.labels(*metric_labels).set(
-        float(total_accounts)
-    )
+    runtime.metrics.chain.configured_contracts_count.labels(*metric_labels).set(float(total_contracts))
+    runtime.metrics.chain.configured_accounts_count.labels(*metric_labels).set(float(total_accounts))
 
     try:
         latest_block = runtime.rpc.get_block(
@@ -199,19 +201,13 @@ def _record_chain_health_metrics(runtime: ChainRuntimeContext) -> int | None:
 
         latest_block_timestamp = latest_block.timestamp
 
-        runtime.metrics.chain.head_block_number.labels(*metric_labels).set(
-            float(latest_block_number)
-        )
+        runtime.metrics.chain.head_block_number.labels(*metric_labels).set(float(latest_block_number))
 
-        runtime.metrics.chain.head_block_timestamp.labels(*metric_labels).set(
-            float(latest_block_timestamp)
-        )
+        runtime.metrics.chain.head_block_timestamp.labels(*metric_labels).set(float(latest_block_timestamp))
 
         time_since_last_block = max(time.time() - latest_block_timestamp, 0)
 
-        runtime.metrics.chain.time_since_last_block.labels(*metric_labels).set(
-            float(time_since_last_block)
-        )
+        runtime.metrics.chain.time_since_last_block.labels(*metric_labels).set(float(time_since_last_block))
     except Exception as exc:  # noqa: BLE001
         LOGGER.warning(
             "Failed to collect latest block metrics for %s.",
@@ -242,9 +238,7 @@ def _record_chain_health_metrics(runtime: ChainRuntimeContext) -> int | None:
 
         finalized_block_number = finalized_block.number
 
-        runtime.metrics.chain.finalized_block_number.labels(*metric_labels).set(
-            float(finalized_block_number)
-        )
+        runtime.metrics.chain.finalized_block_number.labels(*metric_labels).set(float(finalized_block_number))
     except Exception as exc:  # noqa: BLE001
         LOGGER.debug(
             "RPC endpoint did not return finalized block for %s.",

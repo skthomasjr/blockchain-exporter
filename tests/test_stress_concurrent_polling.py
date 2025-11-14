@@ -51,7 +51,7 @@ def _create_test_blockchain(
             accounts=[
                 AccountConfig(
                     name=f"Contract {i} Account {j}",
-                    address=f"0x{'b' * 38}{i:02x}{j:02x}",
+                    address=f"0x{'c' * 36}{i:02x}{j:02x}",
                 )
                 for j in range(accounts_per_contract)
             ],
@@ -97,6 +97,22 @@ def _create_fake_rpc_client(blockchain: BlockchainConfig) -> Any:
     def _get_logs(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
         return []  # No logs
     
+    def _contract(address: str, **kwargs: Any) -> Any:
+        """Mock contract factory that returns a contract proxy."""
+        # Return a mock contract that has the methods we need
+        def _call_contract_function(*args: Any, **kwargs: Any) -> Any:
+            # Return mock values for contract function calls
+            return 1000000  # Mock total supply or balance
+        
+        contract_proxy = SimpleNamespace(
+            functions=SimpleNamespace(
+                totalSupply=lambda: SimpleNamespace(call=_call_contract_function),
+                decimals=lambda: SimpleNamespace(call=lambda: 18),
+                balanceOf=lambda address: SimpleNamespace(call=_call_contract_function),
+            ),
+        )
+        return contract_proxy
+    
     # Extract chain index from name (e.g., "Test Chain 5" -> 5)
     chain_index = int(blockchain.name.split()[-1])
     
@@ -108,6 +124,7 @@ def _create_fake_rpc_client(blockchain: BlockchainConfig) -> Any:
             get_balance=_get_balance,
             get_code=_get_code,
             get_logs=_get_logs,
+            contract=_contract,
         ),
     )
     
@@ -429,45 +446,73 @@ async def test_concurrent_polling_metrics_consistency(
         lambda: context,
     )
     # Use real collection logic with fake RPC client to test metric consistency
+    # Set global metrics so record_poll_success uses the test metrics
+    from blockchain_exporter.metrics import set_metrics
     
-    app = create_app(context=context, metrics=stress_test_metrics)
-    
-    async with app.router.lifespan_context(app):
-        # Wait for polls to complete
-        await asyncio.sleep(0.5)
+    original_metrics = get_metrics()
+    try:
+        set_metrics(stress_test_metrics)
         
-        # Verify metrics for all chains
-        for blockchain in blockchains:
-            chain_id_label = str(1 + int(blockchain.name.split()[-1]))
-            labels = (blockchain.name, chain_id_label)
+        app = create_app(context=context, metrics=stress_test_metrics)
+        
+        async with app.router.lifespan_context(app):
+            # Wait for polls to complete (need more time for real collection logic)
+            # Poll interval is 10 seconds, but first poll should complete quickly
+            # Wait up to 3 seconds for all polls to complete
+            max_wait = 3.0
+            wait_interval = 0.1
+            waited = 0.0
+            all_polls_complete = False
             
-            # Verify poll_success is set correctly
-            poll_success = stress_test_metrics.chain.poll_success.labels(*labels)
-            assert poll_success._value.get() == 1.0, (
-                f"Chain {blockchain.name} should have poll_success=1.0"
-            )
+            while waited < max_wait and not all_polls_complete:
+                await asyncio.sleep(wait_interval)
+                waited += wait_interval
+                
+                # Check if all polls have completed by verifying poll_success > 0 for all chains
+                all_polls_complete = all(
+                    stress_test_metrics.chain.poll_success.labels(
+                        blockchain.name,
+                        str(1 + int(blockchain.name.split()[-1]))
+                    )._value.get() > 0
+                    for blockchain in blockchains
+                )
             
-            # Verify configured counts match expected values
-            expected_accounts = len(blockchain.accounts) + sum(
-                len(contract.accounts) for contract in blockchain.contracts
-            )
-            expected_contracts = len(blockchain.contracts)
-            
-            accounts_count = stress_test_metrics.chain.configured_accounts_count.labels(*labels)
-            contracts_count = stress_test_metrics.chain.configured_contracts_count.labels(*labels)
-            
-            assert accounts_count._value.get() == float(expected_accounts), (
-                f"Chain {blockchain.name} should have {expected_accounts} accounts, "
-                f"got {accounts_count._value.get()}"
-            )
-            assert contracts_count._value.get() == float(expected_contracts), (
-                f"Chain {blockchain.name} should have {expected_contracts} contracts, "
-                f"got {contracts_count._value.get()}"
-            )
-            
-            # Verify head_block_number is set (should be > 0)
-            head_block = stress_test_metrics.chain.head_block_number.labels(*labels)
-            assert head_block._value.get() > 0, (
-                f"Chain {blockchain.name} should have head_block_number > 0"
-            )
+            # Verify metrics for all chains
+            for blockchain in blockchains:
+                chain_id_label = str(1 + int(blockchain.name.split()[-1]))
+                labels = (blockchain.name, chain_id_label)
+                
+                # Verify poll_success is set correctly
+                poll_success = stress_test_metrics.chain.poll_success.labels(*labels)
+                assert poll_success._value.get() == 1.0, (
+                    f"Chain {blockchain.name} should have poll_success=1.0, "
+                    f"got {poll_success._value.get()} after {waited:.1f}s"
+                )
+                
+                # Verify configured counts match expected values
+                expected_accounts = len(blockchain.accounts) + sum(
+                    len(contract.accounts) for contract in blockchain.contracts
+                )
+                expected_contracts = len(blockchain.contracts)
+                
+                accounts_count = stress_test_metrics.chain.configured_accounts_count.labels(*labels)
+                contracts_count = stress_test_metrics.chain.configured_contracts_count.labels(*labels)
+                
+                assert accounts_count._value.get() == float(expected_accounts), (
+                    f"Chain {blockchain.name} should have {expected_accounts} accounts, "
+                    f"got {accounts_count._value.get()}"
+                )
+                assert contracts_count._value.get() == float(expected_contracts), (
+                    f"Chain {blockchain.name} should have {expected_contracts} contracts, "
+                    f"got {contracts_count._value.get()}"
+                )
+                
+                # Verify head_block_number is set (should be > 0)
+                head_block = stress_test_metrics.chain.head_block_number.labels(*labels)
+                assert head_block._value.get() > 0, (
+                    f"Chain {blockchain.name} should have head_block_number > 0"
+                )
+    finally:
+        # Restore original metrics
+        set_metrics(original_metrics)
 

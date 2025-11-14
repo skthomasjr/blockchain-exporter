@@ -20,9 +20,10 @@ from blockchain_exporter.metrics import (
     record_poll_failure,
     record_poll_success,
 )
+from blockchain_exporter.exceptions import RpcConnectionError
 from blockchain_exporter.poller.collect import collect_chain_metrics_sync
 from blockchain_exporter.poller.control import poll_blockchain
-from blockchain_exporter.rpc import RpcClient, RpcClientProtocol, execute_with_retries
+from blockchain_exporter.rpc import RpcClient, execute_with_retries
 
 
 class UnavailableRpcError(Exception):
@@ -500,7 +501,8 @@ def test_execute_with_retries_exhausts_attempts(
     def always_fail() -> None:
         raise NetworkConnectionError("Connection refused")
 
-    with pytest.raises(NetworkConnectionError, match="Connection refused"):
+    # NetworkConnectionError is now wrapped in RpcConnectionError
+    with pytest.raises(RpcConnectionError, match="Connection refused"):
         execute_with_retries(
             always_fail,
             "test_failure",
@@ -556,7 +558,6 @@ def test_backoff_behavior_on_consecutive_failures(
     """Test that consecutive failures trigger exponential backoff."""
     import logging
 
-    from blockchain_exporter.poller.control import poll_blockchain
 
     caplog.set_level(logging.DEBUG)
 
@@ -726,6 +727,11 @@ def test_contract_operations_with_partial_failures(
             def __init__(self, blockchain: BlockchainConfig) -> None:
                 self.blockchain = blockchain
                 self.block_call_map: dict[str, int] = {}
+                # Create a fake contract function that returns 0
+                fake_contract_func = MagicMock()
+                fake_contract_func.return_value.functions.totalSupply.return_value.call.return_value = 0
+                fake_contract_func.return_value.functions.balanceOf.return_value.call.return_value = 0
+                fake_contract_func.return_value.functions.decimals.return_value.call.return_value = 18
                 self.web3 = SimpleNamespace(
                     is_connected=lambda: True,
                     eth=SimpleNamespace(
@@ -734,6 +740,7 @@ def test_contract_operations_with_partial_failures(
                         get_block=lambda identifier, **kwargs: self._get_block(identifier),
                         get_logs=lambda *args, **kwargs: [],
                         get_code=lambda *args, **kwargs: b"0x",
+                        contract=fake_contract_func,
                     ),
                 )
 

@@ -1,6 +1,10 @@
 .PHONY: run lint lint-md lint-docker lint-helm test validate-config print-config helm-install helm-uninstall helm-package docker-build docker-run docker-cleanup clean kill-ports
 
 run:
+	@echo "Checking for processes on ports 8080 and 9100..."
+	@-lsof -ti :8080 | xargs kill -9 2>/dev/null || true
+	@-lsof -ti :9100 | xargs kill -9 2>/dev/null || true
+	@echo "Starting blockchain-exporter..."
 	pipx run poetry run python run.py
 
 kill-ports:

@@ -5,7 +5,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from web3.exceptions import Web3RPCError
 
 from blockchain_exporter.collectors import LOG_MAX_CHUNK_SIZE, _collect_contract_transfer_count
 from blockchain_exporter.config import AccountConfig, BlockchainConfig, ContractConfig
@@ -42,7 +41,16 @@ class ChunkingRpc:
 
         if key in self.errors:
             self.errors.remove(key)
-            raise Web3RPCError({"message": "response too big"})
+            # Raise RpcProtocolError to match what RpcClient would wrap Web3RPCError as
+            from blockchain_exporter.exceptions import RpcProtocolError
+
+            raise RpcProtocolError(
+                "RPC operation 'eth_getLogs' failed: response too big",
+                blockchain="Test Chain",
+                rpc_url="https://rpc.example",
+                rpc_error_code=None,
+                rpc_error_message="response too big",
+            )
 
         self.success_calls.append(key)
         return [{}]

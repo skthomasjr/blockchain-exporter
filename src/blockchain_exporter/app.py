@@ -27,7 +27,7 @@ from .metrics import (
     set_configured_blockchains,
     set_metrics,
 )
-from .poller import poll_blockchain
+from .poller.manager import get_poller_manager
 from .runtime_settings import RuntimeSettings
 from .settings import AppSettings, get_settings
 
@@ -95,12 +95,6 @@ LOGGER = get_logger(__name__)
 APP_TITLE = "Blockchain Prometheus Exporter"
 APP_DESCRIPTION = "Exposes Prometheus metrics for blockchain integrations."
 
-# Global state to prevent duplicate polling tasks when both health and metrics apps start.
-# The first app to initialize creates the tasks; subsequent apps reuse them.
-_polling_tasks_created = False
-_global_polling_tasks: list[asyncio.Task] = []
-_primary_app: FastAPI | None = None  # Tracks which app created the tasks (for cleanup)
-
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -118,7 +112,6 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     - Only the primary app (that created the tasks) performs cleanup
     """
 
-    global _polling_tasks_created, _global_polling_tasks
 
     try:
         context = get_application_context()
@@ -156,30 +149,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.polling_tasks: list[asyncio.Task] = []
 
     # Start blockchain polling in background tasks (non-blocking).
-    # Only create tasks once, even if multiple apps use this lifespan.
-    global _primary_app
-
-    if not _polling_tasks_created:
-        _polling_tasks_created = True
-        _primary_app = app
-        _global_polling_tasks = []
-
-        for blockchain in blockchains:
-            poll_task = asyncio.create_task(
-                poll_blockchain(blockchain, context=context)
-            )
-            _global_polling_tasks.append(poll_task)
-            app.state.polling_tasks.append(poll_task)
-        
-        LOGGER.debug(
-            "Created %d polling task(s) for %d blockchain(s)",
-            len(_global_polling_tasks),
-            len(blockchains),
-        )
-    else:
-        # Tasks already created by another app instance; reference them to avoid duplicates.
-        app.state.polling_tasks = _global_polling_tasks.copy()
-        LOGGER.debug("Reusing existing polling tasks from another app instance")
+    # Use PollerManager to ensure tasks are only created once across multiple apps.
+    manager = get_poller_manager()
+    polling_tasks = manager.create_tasks(blockchains, context, app)
+    app.state.polling_tasks = polling_tasks
 
     try:
         # Yield to start the server; background polling tasks continue running.
@@ -187,43 +160,27 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         # Only shut down tasks if this is the app that created them.
         # This prevents both apps from trying to cancel the same tasks.
-        if _polling_tasks_created and _primary_app is app:
+        manager = get_poller_manager()
+
+        if manager.should_cleanup(app):
             try:
                 context.metrics.exporter.up.set(0)
             except Exception:
                 # Ignore errors during shutdown to prevent cascading failures.
                 pass
 
-            tasks: list[asyncio.Task] = getattr(app.state, "polling_tasks", [])
+            # Shutdown polling tasks using the manager
+            try:
+                await manager.shutdown_tasks(timeout_seconds=2.0)
+            except Exception:
+                # Ignore errors during task shutdown to prevent cascading failures.
+                pass
 
-            # Cancel tasks gracefully.
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-
-            # Wait for tasks to finish cancellation with a timeout.
-            # This prevents hanging if tasks are stuck in RPC calls.
-            # Note: Tasks running in threads (via asyncio.to_thread) cannot be cancelled
-            # and will continue until their RPC calls complete.
-            if tasks:
-                try:
-                    await asyncio.wait_for(
-                        asyncio.gather(*tasks, return_exceptions=True),
-                        timeout=2.0,  # 2 second timeout for graceful shutdown
-                    )
-                except asyncio.TimeoutError:
-                    LOGGER.debug(
-                        "Shutdown: some polling tasks are still running (likely in RPC calls). "
-                        "They will complete in the background."
-                    )
-                except Exception:
-                    # Ignore other errors during task cancellation to prevent cascading failures.
-                    pass
-
-            _polling_tasks_created = False
-            _global_polling_tasks.clear()
-            _primary_app = None
+            # Clear app state polling tasks after shutdown
             app.state.polling_tasks.clear()
+
+            # Reset manager state after cleanup
+            manager.reset()
 
             if getattr(app.state, "context", None) is not None:
                 try:
@@ -232,6 +189,16 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                     # Ignore errors during context reset to prevent cascading failures.
                     pass
                 app.state.context = None
+
+            # Clear connection pools on shutdown
+            try:
+                from .poller.connection_pool import get_connection_pool_manager
+
+                pool_manager = get_connection_pool_manager()
+                pool_manager.clear_pool()
+            except Exception:
+                # Ignore errors during pool cleanup to prevent cascading failures.
+                pass
 
 
 def create_app(

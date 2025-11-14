@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
 
 from blockchain_exporter.app import create_health_app, create_metrics_app
 from blockchain_exporter.config import AccountConfig, BlockchainConfig, ContractConfig
@@ -92,7 +91,9 @@ async def test_health_and_metrics_apps_share_polling_tasks(monkeypatch: pytest.M
             raise
     
     monkeypatch.setattr(app_module, "get_application_context", lambda: context)
-    monkeypatch.setattr(app_module, "poll_blockchain", _tracking_poll)
+    from blockchain_exporter.poller import control as poller_control_module
+
+    monkeypatch.setattr(poller_control_module, "poll_blockchain", _tracking_poll)
     
     # Create both apps
     health_app = create_health_app(context=context)
@@ -191,7 +192,9 @@ async def test_metrics_app_starts_first_then_health_app(monkeypatch: pytest.Monk
             raise
     
     monkeypatch.setattr(app_module, "get_application_context", lambda: context)
-    monkeypatch.setattr(app_module, "poll_blockchain", _tracking_poll)
+    from blockchain_exporter.poller import control as poller_control_module
+
+    monkeypatch.setattr(poller_control_module, "poll_blockchain", _tracking_poll)
     
     # Create both apps
     health_app = create_health_app(context=context)

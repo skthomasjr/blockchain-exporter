@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import logging
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Set
 
 from web3 import Web3
 from web3.exceptions import Web3RPCError
 
 from .config import ContractConfig
+from .exceptions import RpcError, RpcProtocolError
 from .logging import build_log_extra, get_logger, log_duration
 from .models import AccountLabels, ChainRuntimeContext, ContractLabels, TransferWindow
-from .rpc import GetLogsParams, RPC_MAX_RETRIES
+from .rpc import RPC_MAX_RETRIES, GetLogsParams
 
 LOGGER = get_logger(__name__)
 
@@ -54,6 +55,10 @@ def record_contract_balances(
     chain_state = runtime.chain_state
 
     for contract in blockchain.contracts:
+        # Skip disabled contracts (defensive check, though they should be filtered during parsing)
+        if not contract.enabled:
+            continue
+
         contract_labels = runtime.contract_labels(contract)
         chain_state.contract_balance_labels.add(contract_labels.as_tuple())
 
@@ -102,11 +107,12 @@ def record_contract_balances(
                     contract_labels,
                     window,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except RpcError as exc:
                 LOGGER.warning(
-                    "Failed to retrieve balance for contract %s on %s.",
+                    "Failed to retrieve balance for contract %s on %s: %s",
                     contract.address,
                     blockchain.name,
+                    exc,
                     exc_info=exc,
                     extra=build_log_extra(
                         blockchain=blockchain,
@@ -115,6 +121,7 @@ def record_contract_balances(
                         additional={
                             "window_start": window.start_block,
                             "window_end": window.end_block,
+                            **exc.context,
                         },
                     ),
                 )
@@ -140,9 +147,7 @@ def record_contract_balances(
             metrics.contract.token_supply.labels(*labels_tuple).set(float(total_supply))
 
             if transfer_count is not None:
-                metrics.contract.transfer_count.labels(*transfer_labels_tuple).set(
-                    float(transfer_count)
-                )
+                metrics.contract.transfer_count.labels(*transfer_labels_tuple).set(float(transfer_count))
             else:
                 metrics.contract.transfer_count.labels(*transfer_labels_tuple).set(0)
 
@@ -154,7 +159,15 @@ def record_additional_contract_accounts(
     blockchain = runtime.config
 
     for contract in blockchain.contracts:
+        # Skip disabled contracts (defensive check, though they should be filtered during parsing)
+        if not contract.enabled:
+            continue
+
         for contract_account in contract.accounts:
+            # Skip disabled contract accounts (defensive check, though they should be filtered during parsing)
+            if not contract_account.enabled:
+                continue
+
             account_labels = runtime.account_labels(contract_account)
             account_address_lower = account_labels.account_address.lower()
 
@@ -180,11 +193,12 @@ def record_additional_contract_accounts(
                 )
 
                 is_contract = bool(code and len(code) > 0)
-            except Exception as exc:  # noqa: BLE001
+            except RpcError as exc:
                 LOGGER.warning(
-                    "Failed to retrieve balance for contract account %s on %s.",
+                    "Failed to retrieve balance for contract account %s on %s: %s",
                     contract_account.address,
                     blockchain.name,
+                    exc,
                     exc_info=exc,
                     extra=build_log_extra(
                         blockchain=blockchain,
@@ -192,6 +206,7 @@ def record_additional_contract_accounts(
                         contract=contract,
                         account_name=contract_account.name,
                         account_address=contract_account.address,
+                        additional=exc.context,
                     ),
                 )
 
@@ -315,17 +330,20 @@ def _record_contract_account_token_balance(
                         contract=contract,
                     ),
                 )
-            except Exception as decimals_exc:  # noqa: BLE001
+            except RpcError as decimals_exc:
+                # RPC errors from contract function calls are wrapped in RpcError
                 LOGGER.debug(
-                    "Unable to read decimals for token %s on %s; defaulting to %s.",
+                    "Unable to read decimals for token %s on %s; defaulting to %s: %s",
                     contract.name,
                     runtime.config.name,
                     DEFAULT_TOKEN_DECIMALS,
+                    decimals_exc,
                     exc_info=decimals_exc,
                     extra=build_log_extra(
                         blockchain=runtime.config,
                         chain_id_label=runtime.chain_id_label,
                         contract=contract,
+                        additional=decimals_exc.context,
                     ),
                 )
 
@@ -334,18 +352,22 @@ def _record_contract_account_token_balance(
         decimals_label = _contract_decimals_label(contract, decimals)
 
         normalized_balance = Decimal(balance_raw) / (Decimal(10) ** decimals)
-    except Exception as exc:  # noqa: BLE001
+    except (RpcError, ValueError, TypeError, InvalidOperation) as exc:
+        # RPC errors from contract function calls are wrapped in RpcError
+        # ValueError/TypeError/InvalidOperation can occur when balance_raw is not a valid number
         decimals_value = locals().get("decimals")
-        decimals_fallback = (
-            decimals_value if isinstance(decimals_value, int) else DEFAULT_TOKEN_DECIMALS
-        )
+        decimals_fallback = decimals_value if isinstance(decimals_value, int) else DEFAULT_TOKEN_DECIMALS
+
+        # Extract context from RpcError if available, otherwise use empty dict
+        exc_context = exc.context if isinstance(exc, RpcError) else {}
 
         LOGGER.debug(
-            "Failed to retrieve token balance for account %s on contract %s (%s); defaulting to zero (decimals=%s).",
+            "Failed to retrieve token balance for account %s on contract %s (%s); defaulting to zero (decimals=%s): %s",
             account_labels.account_address,
             contract.name,
             runtime.config.name,
             decimals_fallback,
+            exc,
             exc_info=exc,
             extra=build_log_extra(
                 blockchain=runtime.config,
@@ -353,6 +375,7 @@ def _record_contract_account_token_balance(
                 contract=contract,
                 account_name=account_labels.account_name,
                 account_address=account_labels.account_address,
+                additional=exc_context,
             ),
         )
 
@@ -443,16 +466,19 @@ def _collect_contract_total_supply(
                 contract=contract,
             ),
         )
-    except Exception as exc:  # noqa: BLE001
+    except RpcError as exc:
+        # RPC errors from contract function calls are wrapped in RpcError
         LOGGER.debug(
-            "Unable to retrieve totalSupply for contract %s on %s; defaulting to zero.",
+            "Unable to retrieve totalSupply for contract %s on %s; defaulting to zero: %s",
             contract_address,
             runtime.config.name,
+            exc,
             exc_info=exc,
             extra=build_log_extra(
                 blockchain=runtime.config,
                 chain_id_label=runtime.chain_id_label,
                 contract=contract,
+                additional=exc.context,
             ),
         )
 
@@ -508,7 +534,8 @@ def _collect_contract_transfer_count(
                     },
                 ),
             )
-        except Exception as exc:  # noqa: BLE001
+        except RpcError as exc:
+            # Check if it's a "response too big" error that can be handled by chunking
             if _is_response_too_big_error(exc) and range_end - range_start > LOG_SPLIT_MIN_BLOCK_SPAN:
                 midpoint = range_start + (range_end - range_start) // 2
 
@@ -518,10 +545,11 @@ def _collect_contract_transfer_count(
                 continue
 
             LOGGER.debug(
-                "Failed to retrieve transfer logs for contract %s between blocks %s and %s.",
+                "Failed to retrieve transfer logs for contract %s between blocks %s and %s: %s",
                 contract_address,
                 range_start,
                 range_end,
+                exc,
                 exc_info=exc,
                 extra=build_log_extra(
                     blockchain=blockchain,
@@ -530,6 +558,7 @@ def _collect_contract_transfer_count(
                     additional={
                         "from_block": range_start,
                         "to_block": range_end,
+                        **exc.context,
                     },
                 ),
             )
@@ -565,16 +594,31 @@ def _contract_decimals_label(
 
 
 def _is_response_too_big_error(exception: Exception) -> bool:
-    if not isinstance(exception, Web3RPCError):
-        return False
+    """Check if an exception represents a 'response too big' error.
 
-    payload = exception.args[0] if exception.args else {}
-
-    if isinstance(payload, dict):
-        message = str(payload.get("message", "")).lower()
-
-        if "too big" in message or "exceeded max limit" in message:
+    Handles both Web3RPCError (original) and RpcProtocolError (wrapped) exceptions.
+    """
+    # Check if it's a wrapped RpcProtocolError with Web3RPCError context
+    if isinstance(exception, RpcProtocolError):
+        # Check the error message for "too big" keywords
+        error_message = str(exception).lower()
+        if "too big" in error_message or "exceeded max limit" in error_message:
             return True
+        # Check rpc_error_message if available
+        if exception.rpc_error_message:
+            message_lower = exception.rpc_error_message.lower()
+            if "too big" in message_lower or "exceeded max limit" in message_lower:
+                return True
+
+    # Check if it's a Web3RPCError (original, not wrapped)
+    if isinstance(exception, Web3RPCError):
+        payload = exception.args[0] if exception.args else {}
+
+        if isinstance(payload, dict):
+            message = str(payload.get("message", "")).lower()
+
+            if "too big" in message or "exceeded max limit" in message:
+                return True
 
     return False
 
@@ -586,4 +630,3 @@ __all__ = [
     "record_contract_balances",
     "DEFAULT_TRANSFER_LOOKBACK_BLOCKS",
 ]
-
