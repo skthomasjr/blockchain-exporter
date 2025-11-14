@@ -119,9 +119,15 @@ jobs:
       - name: Package Helm chart
         working-directory: helm/charts/blockchain-exporter
         run: |
-          helm package . --version ${{ steps.version.outputs.version }} --app-version ${{ steps.version.outputs.version }}
+          # Temporarily update image tag to release version for packaging
+          sed -i.bak "s/^  tag: .*/  tag: \"${{ steps.version.outputs.version }}\"/" values.yaml
+          helm package . \
+            --version ${{ steps.version.outputs.version }} \
+            --app-version ${{ steps.version.outputs.version }}
           CHART_FILE=$(ls blockchain-exporter-*.tgz)
           echo "CHART_FILE=helm/charts/blockchain-exporter/$CHART_FILE" >> $GITHUB_ENV
+          # Restore original values.yaml
+          mv values.yaml.bak values.yaml
 
       - name: Configure Helm for OCI
         run: |
