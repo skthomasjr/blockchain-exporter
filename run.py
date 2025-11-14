@@ -9,8 +9,7 @@ src_dir = Path(__file__).parent / "src"
 sys.path.insert(0, str(src_dir))
 
 # Import and run
-from blockchain_exporter.main import run
+from blockchain_exporter.main import run  # noqa: E402
 
 if __name__ == "__main__":
     run()
-
