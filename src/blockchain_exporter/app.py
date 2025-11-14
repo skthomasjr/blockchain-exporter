@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import logging
 import logging.config
 from contextlib import asynccontextmanager
@@ -27,6 +28,7 @@ from .metrics import (
     set_configured_blockchains,
     set_metrics,
 )
+from .poller.collect import collect_chain_metrics_sync
 from .poller.manager import get_poller_manager
 from .runtime_settings import RuntimeSettings
 from .settings import AppSettings, get_settings
@@ -99,13 +101,15 @@ APP_DESCRIPTION = "Exposes Prometheus metrics for blockchain integrations."
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Manage startup and shutdown by coordinating metrics and poller tasks.
-    
+
     On startup:
     - Loads blockchain configuration and application context
     - Sets basic metrics (up, configured_blockchains) early for immediate availability
+    - Optionally performs synchronous warm poll (if WARM_POLL_ENABLED=true) to populate
+      metrics before readiness flips healthy, improving initial metric availability
     - Creates background polling tasks for each configured blockchain
     - Prevents duplicate task creation when multiple apps share the same lifespan
-    
+
     On shutdown:
     - Cancels all polling tasks gracefully with a timeout
     - Resets application context and metrics state
@@ -148,11 +152,117 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.blockchain_configs = blockchains
     app.state.polling_tasks: list[asyncio.Task] = []
 
+    # Perform warm poll if enabled (synchronous poll before server starts).
+    # This populates metrics before readiness flips to healthy, improving
+    # initial metric availability for monitoring systems.
+    if SETTINGS.poller.warm_poll_enabled and blockchains:
+        LOGGER.info(
+            "Performing warm poll for %d blockchain(s) with timeout of %.1f seconds",
+            len(blockchains),
+            SETTINGS.poller.warm_poll_timeout_seconds,
+            extra=build_log_extra(additional={"blockchain_count": len(blockchains), "timeout_seconds": SETTINGS.poller.warm_poll_timeout_seconds}),
+        )
+
+        try:
+            # Run warm poll in thread pool with timeout to avoid blocking indefinitely.
+            # Use ThreadPoolExecutor to run synchronous collect_chain_metrics_sync in parallel.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(blockchains)) as executor:
+                warm_poll_tasks = {
+                    executor.submit(collect_chain_metrics_sync, blockchain, None, context.metrics): blockchain
+                    for blockchain in blockchains
+                }
+
+                # Wait for all tasks to complete or timeout.
+                # Note: wait() returns when all tasks complete OR timeout expires.
+                done, not_done = concurrent.futures.wait(
+                    warm_poll_tasks,
+                    timeout=SETTINGS.poller.warm_poll_timeout_seconds,
+                )
+
+                # Log results for completed tasks.
+                for future in done:
+                    blockchain = warm_poll_tasks[future]
+                    try:
+                        success = future.result(timeout=0)  # Result should be immediately available for done futures
+                        if success:
+                            LOGGER.debug(
+                                "Warm poll succeeded for blockchain %s",
+                                blockchain.name,
+                                extra=build_log_extra(blockchain=blockchain),
+                            )
+                        else:
+                            LOGGER.warning(
+                                "Warm poll failed for blockchain %s",
+                                blockchain.name,
+                                extra=build_log_extra(blockchain=blockchain),
+                            )
+                    except Exception as exc:
+                        LOGGER.warning(
+                            "Warm poll raised exception for blockchain %s: %s",
+                            blockchain.name,
+                            exc,
+                            exc_info=exc,
+                            extra=build_log_extra(blockchain=blockchain),
+                        )
+
+                # Log timeout for tasks that didn't complete within timeout.
+                # Note: We can't actually cancel running threads, but we log the timeout
+                # and continue startup. The background poller will handle these chains normally.
+                if not_done:
+                    for future in not_done:
+                        blockchain = warm_poll_tasks[future]
+                        # Attempt to cancel (may not work if already executing)
+                        future.cancel()
+                        LOGGER.warning(
+                            "Warm poll timed out for blockchain %s (timeout: %.1f seconds). Continuing startup; background poller will handle this chain.",
+                            blockchain.name,
+                            SETTINGS.poller.warm_poll_timeout_seconds,
+                            extra=build_log_extra(
+                                blockchain=blockchain,
+                                additional={"timeout_seconds": SETTINGS.poller.warm_poll_timeout_seconds},
+                            ),
+                        )
+
+        except Exception as exc:
+            # Don't fail startup if warm poll fails; log and continue.
+            LOGGER.warning(
+                "Warm poll encountered error: %s. Continuing startup.",
+                exc,
+                exc_info=exc,
+            )
+
     # Start blockchain polling in background tasks (non-blocking).
     # Use PollerManager to ensure tasks are only created once across multiple apps.
     manager = get_poller_manager()
     polling_tasks = manager.create_tasks(blockchains, context, app)
     app.state.polling_tasks = polling_tasks
+
+    # Start background task to handle SIGHUP-triggered config reload
+    reload_task: asyncio.Task | None = None
+    if manager.should_cleanup(app):  # Only create reload task in primary app
+        from .main import _reload_event
+        from .reload import reload_configuration
+
+        async def _reload_monitor() -> None:
+            """Monitor for SIGHUP-triggered config reload requests."""
+            while True:
+                try:
+                    # Check reload event every second
+                    await asyncio.sleep(1.0)
+                    if _reload_event.is_set():
+                        _reload_event.clear()
+                        LOGGER.info("SIGHUP received, reloading configuration...")
+                        success, message = await reload_configuration()
+                        if success:
+                            LOGGER.info("Configuration reloaded successfully via SIGHUP")
+                        else:
+                            LOGGER.error("Configuration reload failed via SIGHUP: %s", message)
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    LOGGER.exception("Error in reload monitor: %s", exc, exc_info=exc)
+
+        reload_task = asyncio.create_task(_reload_monitor())
 
     try:
         # Yield to start the server; background polling tasks continue running.
@@ -168,6 +278,17 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             except Exception:
                 # Ignore errors during shutdown to prevent cascading failures.
                 pass
+
+            # Cancel reload monitor task if it exists
+            if reload_task is not None and not reload_task.done():
+                reload_task.cancel()
+                try:
+                    await reload_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    # Ignore errors during reload task cancellation
+                    pass
 
             # Shutdown polling tasks using the manager
             try:
@@ -207,11 +328,11 @@ def create_app(
     context: ApplicationContext | None = None,
 ) -> FastAPI:
     """Create a FastAPI instance configured for the blockchain exporter.
-    
+
     Args:
         metrics: Optional metrics store for dependency injection (defaults to global metrics).
         context: Optional application context for dependency injection (defaults to global context).
-    
+
     Returns:
         FastAPI application instance with all routes registered.
     """
@@ -240,11 +361,11 @@ def create_health_app(
     context: ApplicationContext | None = None,
 ) -> FastAPI:
     """Create a FastAPI instance for health endpoints only (port 8080).
-    
+
     Args:
         metrics: Optional metrics store for dependency injection (defaults to global metrics).
         context: Optional application context for dependency injection (defaults to global context).
-    
+
     Returns:
         FastAPI application instance with health routes only.
     """
@@ -273,15 +394,15 @@ def create_metrics_app(
     context: ApplicationContext | None = None,
 ) -> FastAPI:
     """Create a FastAPI instance for metrics endpoint only (port 9100).
-    
+
     Note:
         This app does not create polling tasks; it reuses tasks created by the health app
         to avoid duplicate polling.
-    
+
     Args:
         metrics: Optional metrics store for dependency injection (defaults to global metrics).
         context: Optional application context for dependency injection (defaults to global context).
-    
+
     Returns:
         FastAPI application instance with metrics route only.
     """

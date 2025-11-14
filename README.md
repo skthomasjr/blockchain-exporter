@@ -11,15 +11,19 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.121+-00a396.svg)](https://fastapi.tiangolo.com)
 [![Platform](https://img.shields.io/badge/platform-linux%2Famd64%20%7C%20linux%2Farm64-blue)](<>)
 
-FastAPI-based exporter exposing Prometheus metrics for blockchain monitoring.
+A Prometheus exporter for blockchain monitoring. FastAPI-based service that polls Ethereum-compatible chains and exposes metrics in Prometheus format.
 
 ## Runtime Overview
 
-- Load environment configuration and `config.toml`, expanding environment variables.
-- Set basic metrics (up, configured_blockchains) early for immediate availability.
-- Launch background pollers that scrape RPC endpoints, update Prometheus gauges, and back off with exponential delays on repeated failures.
-- Expose health endpoints (`/health`, `/health/details`, `/health/livez`, `/health/readyz`) on port 8080 for Kubernetes probes.
-- Expose metrics endpoint (`/metrics`) on port 9100 for Prometheus scraping.
+A Prometheus exporter that:
+
+- Loads environment configuration and `config.toml`, expanding environment variables.
+- Sets basic Prometheus metrics (up, configured_blockchains) early for immediate availability.
+- Optionally performs synchronous warm poll during startup (if `WARM_POLL_ENABLED=true`) to populate Prometheus metrics before readiness flips healthy, improving initial metric availability for Prometheus scraping.
+- Launches background pollers that scrape blockchain RPC endpoints, update Prometheus gauges, and back off with exponential delays on repeated failures.
+- Exposes health endpoints (`/health`, `/health/details`, `/health/livez`, `/health/readyz`) on port 8080 for Kubernetes probes.
+- Exposes Prometheus metrics endpoint (`/metrics`) on port 9100 for Prometheus scraping.
+- Supports dynamic configuration reload via SIGHUP signal or HTTP POST `/health/reload` endpoint without service restart.
 
 ## Configuration
 
@@ -41,10 +45,38 @@ Environment variables provide operational tuning without code changes:
 | `MAX_FAILURE_BACKOFF_SECONDS` | Ceiling for exponential poll backoff. | `900` |
 | `RPC_REQUEST_TIMEOUT_SECONDS` | Web3 HTTP timeout in seconds. | `10.0` |
 | `READINESS_STALE_THRESHOLD_SECONDS` | Staleness threshold for readiness gating. | `300` |
+| `WARM_POLL_ENABLED` | Enable synchronous warm poll during startup to populate metrics before readiness flips healthy. | `false` |
+| `WARM_POLL_TIMEOUT_SECONDS` | Timeout for warm poll in seconds. | `30.0` |
 | `HEALTH_PORT` | Port for health check endpoints (`/health`, `/health/livez`, `/health/readyz`). | `8080` |
-| `METRICS_PORT` | Port for Prometheus metrics endpoint (`/metrics`). | `9100` |
+| `METRICS_PORT` | Port for Prometheus metrics endpoint (`/metrics`). Prometheus scrapes this endpoint to collect metrics. | `9100` |
 
 All environment configuration is surfaced through `blockchain_exporter.settings`; modules read from this singleton so overrides apply uniformly.
+
+### Dynamic Configuration Reload
+
+The exporter supports reloading blockchain configuration without restarting the service:
+
+- **SIGHUP Signal**: Send `SIGHUP` to the process to trigger a configuration reload:
+
+  ```bash
+  kill -HUP <pid>
+  ```
+
+- **HTTP Endpoint**: POST to `/health/reload` to trigger a reload:
+
+  ```bash
+  curl -X POST http://localhost:8080/health/reload
+  ```
+
+When a reload is triggered:
+
+- The configuration file is re-read from disk
+- Pollers for removed or disabled blockchains are stopped
+- Pollers for new blockchains are started
+- Metrics for removed blockchains are cleaned up
+- The application context is updated with the new configuration
+
+The reload operation is safe and non-blocking. If the configuration file contains errors, the reload will fail gracefully with an error message, and the existing configuration will continue to be used.
 
 ### Configuration Contract
 
@@ -104,7 +136,7 @@ The application includes a Helm chart for Kubernetes deployment. The chart manag
 
 ### Helm Chart Features
 
-- **Dual-Port Architecture**: Health endpoints on port 8080, metrics endpoint on port 9100 for better network isolation and security.
+- **Dual-Port Architecture**: Health endpoints on port 8080, Prometheus metrics endpoint on port 9100 for better network isolation and security.
 - **ConfigMap Generation**: Automatically generates `config.toml` from declarative `blockchains` configuration in `values.yaml`, or uses a custom `config.toml` if provided.
 - **Secret Management**: Supports both direct values (stored in a Kubernetes Secret) and references to existing Secrets via `secretRef`.
 - **Environment Variable Injection**: Injects secrets as environment variables for TOML variable interpolation (e.g., `${ETH_MAINNET_RPC_ENDPOINT}`) and supports additional non-secret environment variables (with optional `valueFrom` sources) via `.Values.env`.
@@ -204,7 +236,7 @@ startupProbe:
 
 ## Development Workflow
 
-- `make run`: start both servers (health on `http://localhost:8080`, metrics on `http://localhost:9100`).
+- `make run`: start both servers (health on `http://localhost:8080`, Prometheus metrics on `http://localhost:9100`).
 - `make lint`: run Ruff, Markdown formatting (`mdformat --check README.md docs`), Hadolint for Dockerfiles, and Helm chart linting.
 - `make lint-md`: run only the Markdown lint step.
 - `make lint-docker`: run Hadolint against `Dockerfile` (uses local `hadolint` if present, otherwise falls back to Docker).
@@ -226,11 +258,13 @@ Coverage artifacts are written to `coverage.xml` (for CI) and `htmlcov/` when ru
 
 ## Operational Guidance & Alerting
 
+This Prometheus exporter exposes metrics that can be scraped by Prometheus and used for alerting and monitoring:
+
 - **Readiness Lag**: Alert when `/health/readyz` reports `not_ready` for a chain longer than `READINESS_STALE_THRESHOLD_SECONDS`.
-- **Polling Failures**: Monitor `blockchain_poll_success{blockchain="…"}` for sustained 0 values; consider paging after multiple poll intervals.
-- **Metric Freshness**: Track `blockchain_poll_timestamp_seconds` to ensure values keep increasing; stale timestamps indicate RPC or poller issues.
-- **Transfer Activity**: For high-value contracts, alert on sudden drops to zero in `blockchain_contract_transfer_count_window`.
-- Include these checks in runbooks with remediation steps (verify RPC health, credentials, redeploy exporter).
+- **Polling Failures**: Monitor Prometheus metric `blockchain_poll_success{blockchain="…"}` for sustained 0 values; consider paging after multiple poll intervals.
+- **Metric Freshness**: Track Prometheus metric `blockchain_poll_timestamp_seconds` to ensure values keep increasing; stale timestamps indicate RPC or poller issues.
+- **Transfer Activity**: For high-value contracts, alert on sudden drops to zero in Prometheus metric `blockchain_contract_transfer_count_window`.
+- Include these checks in Prometheus alerting rules and runbooks with remediation steps (verify RPC health, credentials, redeploy exporter).
 
 ## Release Checklist
 

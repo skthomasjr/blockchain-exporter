@@ -76,7 +76,12 @@ def _render_runtime_settings(runtime: RuntimeSettings, *, show_secrets: bool) ->
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry point used by Poetry scripts."""
+    """CLI entry point used by Poetry scripts.
+
+    Can be called directly or via Poetry scripts:
+    - `blockchain-exporter-validate-config` - validates config
+    - `blockchain-exporter-print-config` - prints resolved config with --print-resolved
+    """
 
     parser = _build_parser()
     args = parser.parse_args(argv)

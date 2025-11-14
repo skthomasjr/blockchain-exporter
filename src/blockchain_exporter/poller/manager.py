@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from ..config import BlockchainConfig
 from ..context import ApplicationContext
 from ..logging import build_log_extra, get_logger
-from ..metrics import update_poller_thread_count
+from ..metrics import blockchain_identity, update_poller_thread_count
 from . import control as poller_control
 
 if TYPE_CHECKING:
@@ -39,6 +39,7 @@ class PollerManager:
         """Initialize a new PollerManager instance."""
         self.tasks_created: bool = False
         self.polling_tasks: list[asyncio.Task] = []
+        self.task_by_blockchain: dict[tuple[str, str], asyncio.Task] = {}
         self.primary_app: FastAPI | None = None
         self._lock = threading.Lock()
 
@@ -73,6 +74,7 @@ class PollerManager:
                         poller_control.poll_blockchain(blockchain, context=context)
                     )
                     self.polling_tasks.append(poll_task)
+                    self.task_by_blockchain[blockchain_identity(blockchain)] = poll_task
 
                 # Update poller thread count metric
                 active_count = sum(1 for task in self.polling_tasks if not task.done())
@@ -164,11 +166,91 @@ class PollerManager:
         with self._lock:
             return sum(1 for task in self.polling_tasks if not task.done())
 
+    async def reload_tasks(
+        self,
+        old_blockchains: Sequence[BlockchainConfig],
+        new_blockchains: Sequence[BlockchainConfig],
+        context: ApplicationContext,
+    ) -> None:
+        """Reload polling tasks based on configuration changes.
+
+        Compares old and new blockchain configurations and:
+        - Stops tasks for removed or disabled blockchains
+        - Starts tasks for new blockchains
+        - Updates context for existing blockchains
+
+        Args:
+            old_blockchains: Previous blockchain configurations.
+            new_blockchains: New blockchain configurations.
+            context: Application context for dependency injection.
+        """
+        old_identities = {blockchain_identity(bc) for bc in old_blockchains}
+        new_identities = {blockchain_identity(bc) for bc in new_blockchains}
+
+        # Find blockchains to remove
+        to_remove = old_identities - new_identities
+
+        # Find blockchains to add
+        new_blockchain_map = {blockchain_identity(bc): bc for bc in new_blockchains}
+        to_add = new_identities - old_identities
+
+        # Collect tasks to cancel (release lock before awaiting)
+        tasks_to_cancel: list[asyncio.Task] = []
+        with self._lock:
+            for identity in to_remove:
+                task = self.task_by_blockchain.pop(identity, None)
+                if task is not None and not task.done():
+                    tasks_to_cancel.append(task)
+                    if task in self.polling_tasks:
+                        self.polling_tasks.remove(task)
+
+        # Cancel and wait for removed tasks (outside lock to avoid deadlock)
+        for task in tasks_to_cancel:
+            task.cancel()
+            try:
+                await asyncio.wait_for(task, timeout=2.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+
+        # Start tasks for new blockchains
+        new_tasks: list[asyncio.Task] = []
+        for identity in to_add:
+            blockchain = new_blockchain_map[identity]
+            poll_task = asyncio.create_task(
+                poller_control.poll_blockchain(blockchain, context=context)
+            )
+            new_tasks.append((identity, poll_task))
+
+        # Update manager state with new tasks
+        with self._lock:
+            for identity, poll_task in new_tasks:
+                self.polling_tasks.append(poll_task)
+                self.task_by_blockchain[identity] = poll_task
+
+            # Update poller thread count metric
+            active_count = sum(1 for task in self.polling_tasks if not task.done())
+            update_poller_thread_count(active_count)
+
+            if to_remove or to_add:
+                LOGGER.info(
+                    "Reloaded polling tasks: removed %d, added %d",
+                    len(to_remove),
+                    len(to_add),
+                    extra=build_log_extra(
+                        additional={
+                            "removed_count": len(to_remove),
+                            "added_count": len(to_add),
+                            "total_tasks": len(self.polling_tasks),
+                        }
+                    ),
+                )
+
     def reset(self) -> None:
         """Reset the manager state (useful for testing)."""
         with self._lock:
             self.tasks_created = False
             self.polling_tasks = []
+            self.task_by_blockchain = {}
             self.primary_app = None
 
 

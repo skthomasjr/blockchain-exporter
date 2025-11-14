@@ -85,6 +85,8 @@ class PollerSettings:
     default_interval: str
     max_failure_backoff_seconds: int
     rpc_request_timeout_seconds: float
+    warm_poll_enabled: bool
+    warm_poll_timeout_seconds: float
 
 
 @dataclass(slots=True)
@@ -136,6 +138,8 @@ def get_settings() -> AppSettings:
         default_interval=os.getenv("POLL_DEFAULT_INTERVAL", "5m"),
         max_failure_backoff_seconds=_as_int(os.getenv("MAX_FAILURE_BACKOFF_SECONDS"), 900),
         rpc_request_timeout_seconds=_as_float(os.getenv("RPC_REQUEST_TIMEOUT_SECONDS"), 10.0),
+        warm_poll_enabled=_as_bool(os.getenv("WARM_POLL_ENABLED"), False),
+        warm_poll_timeout_seconds=_as_float(os.getenv("WARM_POLL_TIMEOUT_SECONDS"), 30.0),
     )
 
     health_settings = HealthSettings(
