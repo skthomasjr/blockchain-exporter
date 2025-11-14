@@ -1,5 +1,11 @@
 # blockchain-exporter
 
+[![CI](https://github.com/skthomasjr/blockchain-exporter/actions/workflows/ci.yaml/badge.svg)](https://github.com/skthomasjr/blockchain-exporter/actions/workflows/ci.yaml)
+[![Release](https://img.shields.io/github/v/release/skthomasjr/blockchain-exporter?include_prereleases&sort=semver)](https://github.com/skthomasjr/blockchain-exporter/releases)
+[![License](https://img.shields.io/github/license/skthomasjr/blockchain-exporter)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
+[![Platform](https://img.shields.io/badge/platform-linux%2Famd64%20%7C%20linux%2Farm64-blue)]()
+
 FastAPI-based exporter exposing Prometheus metrics for blockchain monitoring.
 
 ## Runtime Overview
