@@ -41,6 +41,8 @@ class ChainMetrics:
     time_since_last_block: Gauge
     poll_success: Gauge
     poll_timestamp: Gauge
+    configured_accounts_count: Gauge
+    configured_contracts_count: Gauge
 
 
 @runtime_checkable
@@ -183,6 +185,18 @@ def create_metrics(registry: CollectorRegistry | None = None) -> MetricsBundle:
         poll_timestamp=Gauge(
             "blockchain_poll_timestamp_seconds",
             "Unix timestamp of the most recent successful polling cycle.",
+            labelnames=("blockchain", "chain_id"),
+            registry=registry,
+        ),
+        configured_accounts_count=Gauge(
+            "blockchain_chain_configured_accounts_count",
+            "Total number of configured accounts (including contract accounts) per blockchain.",
+            labelnames=("blockchain", "chain_id"),
+            registry=registry,
+        ),
+        configured_contracts_count=Gauge(
+            "blockchain_chain_configured_contracts_count",
+            "Total number of configured contracts per blockchain.",
             labelnames=("blockchain", "chain_id"),
             registry=registry,
         ),
@@ -333,6 +347,8 @@ def remove_chain_metrics_for_label(
     _safe_remove_metric(metrics.chain.finalized_block_number, label_tuple)
     _safe_remove_metric(metrics.chain.head_block_timestamp, label_tuple)
     _safe_remove_metric(metrics.chain.time_since_last_block, label_tuple)
+    _safe_remove_metric(metrics.chain.configured_accounts_count, label_tuple)
+    _safe_remove_metric(metrics.chain.configured_contracts_count, label_tuple)
     CHAIN_HEALTH_STATUS.pop(label_tuple, None)
     CHAIN_LAST_SUCCESS.pop(label_tuple, None)
 
@@ -349,6 +365,8 @@ def reset_chain_metrics(blockchain: BlockchainConfig, chain_id_label: str | None
     metrics.chain.finalized_block_number.labels(*labels).set(0)
     metrics.chain.head_block_timestamp.labels(*labels).set(0)
     metrics.chain.time_since_last_block.labels(*labels).set(0)
+    metrics.chain.configured_accounts_count.labels(*labels).set(0)
+    metrics.chain.configured_contracts_count.labels(*labels).set(0)
 
 
 def record_poll_success(

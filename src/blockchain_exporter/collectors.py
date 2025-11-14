@@ -12,7 +12,7 @@ from web3.exceptions import Web3RPCError
 from .config import ContractConfig
 from .logging import build_log_extra, get_logger, log_duration
 from .models import AccountLabels, ChainRuntimeContext, ContractLabels, TransferWindow
-from .rpc import RPC_MAX_RETRIES
+from .rpc import GetLogsParams, RPC_MAX_RETRIES
 
 LOGGER = get_logger(__name__)
 
@@ -488,13 +488,14 @@ def _collect_contract_transfer_count(
             continue
 
         try:
+            log_params: GetLogsParams = {
+                "address": contract_address,
+                "fromBlock": range_start,
+                "toBlock": range_end,
+                "topics": [TRANSFER_EVENT_TOPIC],
+            }
             logs = runtime.rpc.get_logs(
-                {
-                    "address": contract_address,
-                    "fromBlock": range_start,
-                    "toBlock": range_end,
-                    "topics": [TRANSFER_EVENT_TOPIC],
-                },
+                log_params,
                 description=f"eth_getLogs({contract_address})",
                 max_attempts=1,
                 extra=build_log_extra(
@@ -579,10 +580,10 @@ def _is_response_too_big_error(exception: Exception) -> bool:
 
 
 __all__ = [
-    "DEFAULT_TRANSFER_LOOKBACK_BLOCKS",
     "clear_eth_metrics_for_account",
     "clear_token_metrics_for_account",
     "record_additional_contract_accounts",
     "record_contract_balances",
+    "DEFAULT_TRANSFER_LOOKBACK_BLOCKS",
 ]
 

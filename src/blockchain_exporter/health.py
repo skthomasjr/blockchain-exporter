@@ -185,9 +185,9 @@ def format_metrics_payload(payload: bytes) -> bytes:
 
 
 __all__ = [
-    "READINESS_STALE_THRESHOLD_SECONDS",
     "format_metrics_payload",
     "generate_health_report",
     "generate_readiness_report",
+    "READINESS_STALE_THRESHOLD_SECONDS",
 ]
 
