@@ -236,25 +236,25 @@ Coverage artifacts are written to `coverage.xml` (for CI) and `htmlcov/` when ru
      git tag v0.0.1
      git push origin v0.0.1
      ```
-- **Verify Docker image**: After pushing the tag, the GitHub Actions workflow will automatically build and push the Docker image to `ghcr.io/skthomasjr/blockchain-exporter`. Check the Actions tab to confirm the image was published successfully.
+- **Verify Docker image**: After pushing the tag, the GitHub Actions workflow will automatically build and push the Docker image to `ghcr.io/skthomasjr/images/blockchain-exporter`. Check the Actions tab to confirm the image was published successfully.
 - **Verify Helm chart**: The workflow will also package and push the Helm chart to `ghcr.io/skthomasjr/helm-charts/blockchain-exporter` with the same version as your tag.
 - **Make packages public**: After the first release, make both packages public:
   1. Go to your repository on GitHub
   1. Click on "Packages" in the right sidebar (or navigate to `https://github.com/skthomasjr?tab=packages`)
-  1. For each package (`blockchain-exporter` Docker image and `helm-charts` Helm chart):
+  1. For each package (`images/blockchain-exporter` Docker image and `helm-charts` Helm chart):
      - Click on the package name
      - Click "Package settings"
      - Scroll to "Danger Zone" and click "Change visibility"
      - Select "Public" and confirm
 
-The Docker image will be available at `ghcr.io/skthomasjr/blockchain-exporter` with tags matching your release versions (e.g., `v0.0.1`, `0.0.1`, `0.0`, `0`).
+The Docker image will be available at `ghcr.io/skthomasjr/images/blockchain-exporter` with tags matching your release versions (e.g., `v0.0.1`, `0.0.1`, `0.0`, `0`).
 
 The Helm chart will be available at `oci://ghcr.io/skthomasjr/helm-charts/blockchain-exporter` with versions matching your release tags (e.g., `0.0.1`).
 
 ### CI Expectations
 
 - GitHub Actions workflow runs `make lint` (Ruff, Markdown formatting, Hadolint), `make test` (pytest with coverage), and `make validate-config` on pushes to `main` and pull requests.
-- **Docker image build**: When you publish a GitHub release or push a version tag (e.g., `v0.0.1`), the workflow automatically builds and pushes the Docker image to GitHub Container Registry (`ghcr.io/skthomasjr/blockchain-exporter`).
+- **Docker image build**: When you publish a GitHub release or push a version tag (e.g., `v0.0.1`), the workflow automatically builds and pushes the Docker image to GitHub Container Registry (`ghcr.io/skthomasjr/images/blockchain-exporter`).
 - **Helm chart build**: The same release trigger also packages and pushes the Helm chart to the OCI registry (`oci://ghcr.io/skthomasjr/helm-charts/blockchain-exporter`).
 - Coverage gate: ensure the pytest TOTAL line stays at or above **85%** locally before pushing.
 - Treat `make lint && make test && make validate-config` as the local pre-push macro to replicate CI.

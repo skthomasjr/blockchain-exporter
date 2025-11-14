@@ -7,7 +7,7 @@ replicaCount: 1
 
 # This sets the container image more information can be found here: https://kubernetes.io/docs/concepts/containers/images/
 image:
-  repository: ghcr.io/skthomasjr/blockchain-exporter
+  repository: ghcr.io/skthomasjr/images/blockchain-exporter
   # Image pull policy. Valid values: Always, IfNotPresent, Never
   # More information: https://kubernetes.io/docs/concepts/containers/images/#image-pull-policy
   pullPolicy: IfNotPresent
