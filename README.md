@@ -1,10 +1,10 @@
 # blockchain-exporter
 
 [![CI](https://github.com/skthomasjr/blockchain-exporter/actions/workflows/ci.yaml/badge.svg)](https://github.com/skthomasjr/blockchain-exporter/actions/workflows/ci.yaml)
+[![Coverage](https://img.shields.io/badge/coverage-85%25%2B-brightgreen)](https://github.com/skthomasjr/blockchain-exporter)
 [![Release](https://img.shields.io/github/v/tag/skthomasjr/blockchain-exporter?label=release&sort=semver)](https://github.com/skthomasjr/blockchain-exporter/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Coverage](https://img.shields.io/badge/coverage-85%25%2B-brightgreen)](https://github.com/skthomasjr/blockchain-exporter)
-[![Docker Pulls](https://img.shields.io/docker/pulls/skthomasjr/images/blockchain-exporter)](https://github.com/skthomasjr/blockchain-exporter/pkgs/container/images%2Fblockchain-exporter)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io%2Fskthomasjr%2Fimages%2Fblockchain--exporter-blue)](https://github.com/skthomasjr/blockchain-exporter/pkgs/container/images%2Fblockchain-exporter)
 [![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.121+-00a396.svg)](https://fastapi.tiangolo.com)
 [![Platform](https://img.shields.io/badge/platform-linux%2Famd64%20%7C%20linux%2Farm64-blue)](<>)
