@@ -5,7 +5,6 @@
 [![Release](https://img.shields.io/github/v/tag/skthomasjr/blockchain-exporter?label=release&sort=semver)](https://github.com/skthomasjr/blockchain-exporter/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/docker-ghcr.io%2Fskthomasjr%2Fimages%2Fblockchain--exporter-blue)](https://github.com/skthomasjr/blockchain-exporter/pkgs/container/images%2Fblockchain-exporter)
-[![Helm](https://img.shields.io/badge/Helm-v3-blue)](https://helm.sh)
 [![Kubernetes Ready](https://img.shields.io/badge/Kubernetes-Ready-326ce5.svg)](https://kubernetes.io)
 [![Helm Chart](https://img.shields.io/badge/Helm%20Chart-OCI-blue)](https://github.com/skthomasjr/blockchain-exporter/tree/main/helm/charts/blockchain-exporter)
 [![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
