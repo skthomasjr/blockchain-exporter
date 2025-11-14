@@ -49,6 +49,9 @@ class ChainMetrics:
     poll_duration_seconds: Histogram
     consecutive_failures: Gauge
     backoff_duration_seconds: Histogram
+    log_chunks_created_total: Counter
+    log_blocks_queried_per_chunk: Histogram
+    log_chunk_duration_seconds: Histogram
 
 
 @runtime_checkable
@@ -242,6 +245,26 @@ def create_metrics(registry: CollectorRegistry | None = None) -> MetricsBundle:
             "Duration of backoff delays in seconds after polling failures, per blockchain and chain_id.",
             labelnames=("blockchain", "chain_id"),
             buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 900.0),
+            registry=registry,
+        ),
+        log_chunks_created_total=Counter(
+            "blockchain_log_chunks_created_total",
+            "Total number of log chunks created for large log queries, per blockchain, chain_id, and contract address.",
+            labelnames=("blockchain", "chain_id", "contract_address"),
+            registry=registry,
+        ),
+        log_blocks_queried_per_chunk=Histogram(
+            "blockchain_log_blocks_queried_per_chunk",
+            "Number of blocks queried per log chunk, per blockchain, chain_id, and contract address.",
+            labelnames=("blockchain", "chain_id", "contract_address"),
+            buckets=(10, 50, 100, 250, 500, 1000, 2000, 5000, 10000),
+            registry=registry,
+        ),
+        log_chunk_duration_seconds=Histogram(
+            "blockchain_log_chunk_duration_seconds",
+            "Duration of individual log chunk queries in seconds, per blockchain, chain_id, and contract address.",
+            labelnames=("blockchain", "chain_id", "contract_address"),
+            buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
             registry=registry,
         ),
     )
@@ -612,6 +635,70 @@ def update_poller_thread_count(active_count: int) -> None:
     metrics.exporter.poller_thread_count.set(float(active_count))
 
 
+def record_log_chunk_created(
+    blockchain: BlockchainConfig,
+    contract_address: str,
+    chain_id_label: str | None = None,
+) -> None:
+    """Record that a log chunk was created for a large log query.
+
+    Args:
+        blockchain: The blockchain configuration.
+        contract_address: The contract address being queried.
+        chain_id_label: The chain ID label. If None, will attempt to resolve from cache.
+    """
+    metrics = get_metrics()
+    resolved_label = chain_id_label or get_cached_chain_id_label(blockchain) or "unknown"
+
+    labels = (blockchain.name, resolved_label, contract_address.lower())
+
+    metrics.chain.log_chunks_created_total.labels(*labels).inc()
+
+
+def record_log_chunk_blocks(
+    blockchain: BlockchainConfig,
+    contract_address: str,
+    blocks_queried: int,
+    chain_id_label: str | None = None,
+) -> None:
+    """Record the number of blocks queried in a log chunk.
+
+    Args:
+        blockchain: The blockchain configuration.
+        contract_address: The contract address being queried.
+        blocks_queried: The number of blocks queried in this chunk.
+        chain_id_label: The chain ID label. If None, will attempt to resolve from cache.
+    """
+    metrics = get_metrics()
+    resolved_label = chain_id_label or get_cached_chain_id_label(blockchain) or "unknown"
+
+    labels = (blockchain.name, resolved_label, contract_address.lower())
+
+    metrics.chain.log_blocks_queried_per_chunk.labels(*labels).observe(float(blocks_queried))
+
+
+def record_log_chunk_duration(
+    blockchain: BlockchainConfig,
+    contract_address: str,
+    duration_seconds: float,
+    chain_id_label: str | None = None,
+) -> None:
+    """Record the duration of a log chunk query.
+
+    Args:
+        blockchain: The blockchain configuration.
+        contract_address: The contract address being queried.
+        duration_seconds: The duration of the chunk query in seconds.
+        chain_id_label: The chain ID label. If None, will attempt to resolve from cache.
+    """
+    metrics = get_metrics()
+    resolved_label = chain_id_label or get_cached_chain_id_label(blockchain) or "unknown"
+
+    labels = (blockchain.name, resolved_label, contract_address.lower())
+
+    metrics.chain.log_chunk_duration_seconds.labels(*labels).observe(duration_seconds)
+
+
 __all__ = [
     "AccountMetrics",
     "ChainMetricLabelState",
@@ -628,16 +715,19 @@ __all__ = [
     "handle_chain_id_update",
     "record_backoff_duration",
     "record_consecutive_failures",
+    "record_log_chunk_blocks",
+    "record_log_chunk_created",
+    "record_log_chunk_duration",
     "record_poll_duration",
     "record_poll_failure",
     "record_poll_success",
     "record_rpc_call_duration",
     "record_rpc_error",
     "remove_chain_metrics_for_label",
-    "update_poller_thread_count",
     "reset_chain_metrics",
     "reset_metrics_state",
     "set_configured_blockchains",
     "set_metrics",
     "update_chain_label_cache",
+    "update_poller_thread_count",
 ]

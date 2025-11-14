@@ -12,11 +12,12 @@ from .health import (
     generate_readiness_report,
 )
 from .metrics import get_metrics
+from .reload import reload_configuration
 
 
 def register_health_routes(app: FastAPI) -> None:
     """Register health check endpoints on the health port (8080).
-    
+
     Registers the following endpoints:
     - GET /health: Overall health status with chain details
     - GET /health/details: Detailed health report
@@ -72,10 +73,38 @@ def register_health_routes(app: FastAPI) -> None:
             },
         )
 
+    @app.post("/health/reload", response_class=JSONResponse)
+    async def reload() -> JSONResponse:
+        """Reload blockchain configuration from disk.
+
+        This endpoint allows reloading the configuration file without restarting
+        the service. It will:
+        - Reload the configuration file
+        - Stop pollers for removed/disabled blockchains
+        - Start pollers for new blockchains
+        - Clean up metrics for removed blockchains
+
+        Returns:
+            JSON response with reload status and message.
+        """
+        success, message = await reload_configuration()
+
+        status_code = (
+            status.HTTP_200_OK if success else status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "status": "success" if success else "error",
+                "message": message,
+            },
+        )
+
 
 def register_metrics_routes(app: FastAPI) -> None:
     """Register metrics endpoint on the metrics port (9100).
-    
+
     Registers:
     - GET /metrics: Prometheus metrics endpoint (always returns 200)
     """
@@ -91,7 +120,7 @@ def register_metrics_routes(app: FastAPI) -> None:
 
 def register_routes(app: FastAPI) -> None:
     """Register all routes (for backward compatibility).
-    
+
     This function registers both health and metrics routes on a single app.
     For dual-port deployments, use register_health_routes() and register_metrics_routes()
     separately on different FastAPI instances.

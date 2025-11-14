@@ -144,6 +144,8 @@ volumeMounts: []
 # - RPC_REQUEST_TIMEOUT_SECONDS: Timeout for RPC requests in seconds. Default: 10.0
 # - MAX_FAILURE_BACKOFF_SECONDS: Maximum backoff delay after consecutive failures in seconds. Default: 900
 # - READINESS_STALE_THRESHOLD_SECONDS: Threshold for marking chains as stale in readiness checks (seconds). Default: 300
+# - WARM_POLL_ENABLED: Enable synchronous warm poll during startup to populate metrics before readiness flips healthy (true/false). Default: false
+# - WARM_POLL_TIMEOUT_SECONDS: Timeout for warm poll in seconds. Default: 30.0
 # - HEALTH_PORT: Port for health endpoints. Default: 8080
 # - METRICS_PORT: Port for metrics endpoint. Default: 9100
 # - BLOCKCHAIN_EXPORTER_CONFIG_PATH: Path to config.toml file or directory containing it. Default: ./config.toml
@@ -163,6 +165,10 @@ env: []
 #   value: "1200"
 # - name: READINESS_STALE_THRESHOLD_SECONDS
 #   value: "600"
+# - name: WARM_POLL_ENABLED
+#   value: "true"
+# - name: WARM_POLL_TIMEOUT_SECONDS
+#   value: "30.0"
 # - name: HEALTH_PORT
 #   value: "8080"
 # - name: METRICS_PORT

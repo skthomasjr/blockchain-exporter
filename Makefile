@@ -5,7 +5,7 @@ run:
 	@-lsof -ti :8080 | xargs kill -9 2>/dev/null || true
 	@-lsof -ti :9100 | xargs kill -9 2>/dev/null || true
 	@echo "Starting blockchain-exporter..."
-	pipx run poetry run python run.py
+	@./scripts/run.sh
 
 kill-ports:
 	@echo "Killing processes using ports 8080 and 9100..."
@@ -79,10 +79,10 @@ test:
 		{ status=$$?; [ $$status -eq 5 ] && exit 0 || exit $$status; }
 
 validate-config:
-	pipx run poetry run python validate_config.py $(if $(CONFIG),--config $(CONFIG),)
+	@./scripts/validate-config.sh $(if $(CONFIG),--config $(CONFIG),)
 
 print-config:
-	pipx run poetry run python print_config.py $(if $(CONFIG),--config $(CONFIG),)
+	@./scripts/print-config.sh $(if $(CONFIG),--config $(CONFIG),)
 
 docker-build:
 	docker build -t blockchain-exporter .

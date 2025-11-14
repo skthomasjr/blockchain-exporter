@@ -134,3 +134,80 @@ def test_collect_chain_metrics_sync_block_failure(monkeypatch, blockchain_config
 
     assert result is False
     assert failures == [(blockchain_config, "1")]
+
+
+def test_collect_chain_metrics_sync_web3_client_creation_failure(monkeypatch, blockchain_config: BlockchainConfig) -> None:
+    """Test that Web3 client creation failures are handled gracefully."""
+    failures: list[BlockchainConfig] = []
+
+    def fake_record_poll_failure(blockchain, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+        failures.append(blockchain)
+
+    def failing_create_web3_client(blockchain: BlockchainConfig):  # type: ignore[no-untyped-def]
+        raise RuntimeError("Failed to create Web3 client")
+
+    monkeypatch.setattr("blockchain_exporter.poller.collect.record_poll_failure", fake_record_poll_failure)
+    monkeypatch.setattr("blockchain_exporter.poller.collect.create_web3_client", failing_create_web3_client)
+
+    result = collect_chain_metrics_sync(blockchain_config, rpc_client=None)
+
+    assert result is False
+    assert failures == [blockchain_config]
+
+
+def test_collect_chain_metrics_sync_account_balance_retrieval_failure(monkeypatch, blockchain_config: BlockchainConfig) -> None:
+    """Test that account balance retrieval failures are handled gracefully."""
+    rpc = StubRpc()
+    runtime = build_runtime(blockchain_config, rpc)
+
+    def failing_get_balance(address: str, **_kwargs) -> int:
+        from blockchain_exporter.exceptions import RpcError
+
+        raise RpcError("RPC failed", blockchain=blockchain_config.name, rpc_url=blockchain_config.rpc_url)
+
+    rpc.get_balance = failing_get_balance  # type: ignore[assignment]
+
+    # Mock record_contract_balances to avoid errors
+    def fake_record_contract_balances(_runtime, _latest_block_number):  # type: ignore[no-untyped-def]
+        pass
+
+    def fake_record_additional(_runtime, _processed_accounts):  # type: ignore[no-untyped-def]
+        pass
+
+    def fake_record_poll_success(blockchain, chain_id_label, **kwargs):  # type: ignore[no-untyped-def]
+        pass
+
+    monkeypatch.setattr("blockchain_exporter.poller.collect.record_contract_balances", fake_record_contract_balances)
+    monkeypatch.setattr("blockchain_exporter.poller.collect.record_additional_contract_accounts", fake_record_additional)
+    monkeypatch.setattr("blockchain_exporter.poller.collect.record_poll_success", fake_record_poll_success)
+
+    # Should complete successfully despite account balance failure
+    # The account balance error is caught and logged, but doesn't fail the entire poll
+    result = collect_chain_metrics_sync(blockchain_config, rpc_client=rpc, metrics=runtime.metrics)
+
+    # Should still succeed because account balance failure is handled gracefully
+    assert result is True
+
+
+def test_collect_chain_metrics_sync_record_chain_health_metrics_failure(monkeypatch, blockchain_config: BlockchainConfig) -> None:
+    """Test that _record_chain_health_metrics failures are handled gracefully."""
+    rpc = StubRpc()
+
+    def failing_get_block(_identifier: str, **_kwargs):
+        from blockchain_exporter.exceptions import RpcError
+
+        raise RpcError("RPC unavailable", blockchain=blockchain_config.name, rpc_url=blockchain_config.rpc_url)
+
+    rpc.get_block = failing_get_block  # type: ignore[assignment]
+
+    failures: list[tuple[BlockchainConfig, str]] = []
+
+    def fake_record_poll_failure(blockchain, chain_id_label="1", *_args, **_kwargs):  # type: ignore[no-untyped-def]
+        failures.append((blockchain, chain_id_label))
+
+    monkeypatch.setattr("blockchain_exporter.poller.collect.record_poll_failure", fake_record_poll_failure)
+
+    result = collect_chain_metrics_sync(blockchain_config, rpc_client=rpc)
+
+    assert result is False
+    assert failures == [(blockchain_config, "1")]

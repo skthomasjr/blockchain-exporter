@@ -283,8 +283,8 @@ def reset_connection_pool_manager() -> None:
 
 __all__ = [
     "ConnectionPoolManager",
-    "DEFAULT_MAX_POOL_SIZE",
-    "DEFAULT_POOL_SIZE",
     "get_connection_pool_manager",
     "reset_connection_pool_manager",
+    "DEFAULT_MAX_POOL_SIZE",
+    "DEFAULT_POOL_SIZE",
 ]

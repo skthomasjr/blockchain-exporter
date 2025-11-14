@@ -8,8 +8,8 @@ import time
 
 from ..config import BlockchainConfig
 from ..context import ApplicationContext, get_application_context
-from ..logging import build_log_extra, get_logger, log_duration
 from ..exceptions import RpcError
+from ..logging import build_log_extra, get_logger, log_duration
 from ..metrics import (
     MetricsStoreProtocol,
     get_cached_chain_id_label,
@@ -34,10 +34,10 @@ async def poll_blockchain(
     context: ApplicationContext | None = None,
 ) -> None:
     """Continuously collect metrics for a blockchain with exponential backoff on failures.
-    
+
     This function runs indefinitely until cancelled. It performs metric collection cycles
     at the configured poll interval, with exponential backoff when failures occur.
-    
+
     Args:
         blockchain: Blockchain configuration to poll.
         context: Optional application context (defaults to global context).
@@ -180,12 +180,12 @@ async def collect_blockchain_metrics(
     metrics: MetricsStoreProtocol | None = None,
 ) -> bool:
     """Execute one metrics collection cycle inside a worker thread.
-    
+
     Args:
         blockchain: Blockchain configuration to collect metrics for.
         rpc_client: Optional RPC client (defaults to creating one from context).
         metrics: Optional metrics store (defaults to global metrics).
-    
+
     Returns:
         True if collection succeeded, False otherwise.
     """

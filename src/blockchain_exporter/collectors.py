@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from decimal import Decimal, InvalidOperation
 from typing import Set
 
@@ -12,6 +13,11 @@ from web3.exceptions import Web3RPCError
 from .config import ContractConfig
 from .exceptions import RpcError, RpcProtocolError
 from .logging import build_log_extra, get_logger, log_duration
+from .metrics import (
+    record_log_chunk_blocks,
+    record_log_chunk_created,
+    record_log_chunk_duration,
+)
 from .models import AccountLabels, ChainRuntimeContext, ContractLabels, TransferWindow
 from .rpc import RPC_MAX_RETRIES, GetLogsParams
 
@@ -21,6 +27,14 @@ DEFAULT_TOKEN_DECIMALS = 0
 DEFAULT_TRANSFER_LOOKBACK_BLOCKS = 5000
 LOG_SPLIT_MIN_BLOCK_SPAN = 1
 LOG_MAX_CHUNK_SIZE = 2000
+# Minimum chunk size when adaptive chunking reduces size due to large responses
+LOG_MIN_CHUNK_SIZE = 100
+# Target response size (in logs) for adaptive chunking - if response exceeds this, reduce chunk size
+LOG_TARGET_RESPONSE_SIZE = 5000
+# Reduction factor when response is too large (reduce chunk size by this factor)
+LOG_CHUNK_REDUCTION_FACTOR = 0.75
+# Growth factor when response is small (increase chunk size by this factor, with max cap)
+LOG_CHUNK_GROWTH_FACTOR = 1.25
 TRANSFER_EVENT_TOPIC = Web3.keccak(text="Transfer(address,address,uint256)").hex()
 
 ERC20_ABI = (
@@ -494,9 +508,18 @@ def _collect_contract_transfer_count(
     contract_labels: ContractLabels,
     window: TransferWindow,
 ) -> int | None:
+    """Collect transfer event count for a contract with adaptive chunking.
+
+    Uses adaptive chunk sizing based on response size:
+    - If response exceeds target size, reduces chunk size for subsequent chunks
+    - If response is small, may increase chunk size (with max cap) for efficiency
+    - Records metrics for chunk creation, blocks queried, and duration
+    """
     blockchain = runtime.config
 
     total_logs = 0
+    # Track current chunk size per contract for adaptive sizing
+    current_chunk_size = LOG_MAX_CHUNK_SIZE
     ranges: list[tuple[int, int]] = [(window.start_block, window.end_block)]
 
     while ranges:
@@ -505,13 +528,21 @@ def _collect_contract_transfer_count(
         if range_start > range_end:
             continue
 
-        if range_end - range_start > LOG_MAX_CHUNK_SIZE:
-            chunk_end = range_start + LOG_MAX_CHUNK_SIZE
+        block_span = range_end - range_start + 1
+
+        # If range exceeds current chunk size, split it
+        if block_span > current_chunk_size:
+            chunk_end = range_start + current_chunk_size - 1
 
             ranges.append((chunk_end + 1, range_end))
             ranges.append((range_start, chunk_end))
 
             continue
+
+        # Record chunk creation for this query
+        record_log_chunk_created(blockchain, contract_address, runtime.chain_id_label)
+
+        chunk_start_time = time.monotonic()
 
         try:
             log_params: GetLogsParams = {
@@ -534,13 +565,105 @@ def _collect_contract_transfer_count(
                     },
                 ),
             )
-        except RpcError as exc:
-            # Check if it's a "response too big" error that can be handled by chunking
-            if _is_response_too_big_error(exc) and range_end - range_start > LOG_SPLIT_MIN_BLOCK_SPAN:
-                midpoint = range_start + (range_end - range_start) // 2
 
-                ranges.append((midpoint + 1, range_end))
-                ranges.append((range_start, midpoint))
+            chunk_duration = time.monotonic() - chunk_start_time
+
+            # Record chunk metrics
+            record_log_chunk_blocks(blockchain, contract_address, block_span, runtime.chain_id_label)
+            record_log_chunk_duration(blockchain, contract_address, chunk_duration, runtime.chain_id_label)
+
+            total_logs += len(logs)
+
+            # Adaptive chunk sizing based on response size
+            if len(logs) > LOG_TARGET_RESPONSE_SIZE:
+                # Response too large - reduce chunk size for future chunks
+                new_chunk_size = max(
+                    int(current_chunk_size * LOG_CHUNK_REDUCTION_FACTOR),
+                    LOG_MIN_CHUNK_SIZE,
+                )
+                if new_chunk_size < current_chunk_size:
+                    current_chunk_size = new_chunk_size
+                    LOGGER.debug(
+                        "Reducing chunk size to %d blocks for contract %s due to large response (%d logs)",
+                        new_chunk_size,
+                        contract_address,
+                        len(logs),
+                        extra=build_log_extra(
+                            blockchain=blockchain,
+                            chain_id_label=runtime.chain_id_label,
+                            contract=contract,
+                            additional={
+                                "chunk_size": new_chunk_size,
+                                "logs_count": len(logs),
+                            },
+                        ),
+                    )
+            elif len(logs) < LOG_TARGET_RESPONSE_SIZE // 4 and current_chunk_size < LOG_MAX_CHUNK_SIZE:
+                # Response small and we're below max - increase chunk size for future chunks
+                new_chunk_size = min(
+                    int(current_chunk_size * LOG_CHUNK_GROWTH_FACTOR),
+                    LOG_MAX_CHUNK_SIZE,
+                )
+                if new_chunk_size > current_chunk_size:
+                    current_chunk_size = new_chunk_size
+                    LOGGER.debug(
+                        "Increasing chunk size to %d blocks for contract %s due to small response (%d logs)",
+                        new_chunk_size,
+                        contract_address,
+                        len(logs),
+                        extra=build_log_extra(
+                            blockchain=blockchain,
+                            chain_id_label=runtime.chain_id_label,
+                            contract=contract,
+                            additional={
+                                "chunk_size": new_chunk_size,
+                                "logs_count": len(logs),
+                            },
+                        ),
+                    )
+
+        except RpcError as exc:
+            chunk_duration = time.monotonic() - chunk_start_time
+
+            # Record chunk metrics even on error
+            record_log_chunk_blocks(blockchain, contract_address, block_span, runtime.chain_id_label)
+            record_log_chunk_duration(blockchain, contract_address, chunk_duration, runtime.chain_id_label)
+
+            # Check if it's a "response too big" error that can be handled by chunking
+            if _is_response_too_big_error(exc) and block_span > LOG_SPLIT_MIN_BLOCK_SPAN:
+                # Reduce chunk size and split using new chunk size
+                new_chunk_size = max(
+                    int(current_chunk_size * LOG_CHUNK_REDUCTION_FACTOR),
+                    LOG_MIN_CHUNK_SIZE,
+                )
+                current_chunk_size = new_chunk_size
+
+                # Split at the new chunk size boundary
+                if block_span > new_chunk_size:
+                    chunk_end = range_start + new_chunk_size - 1
+                    ranges.append((chunk_end + 1, range_end))
+                    ranges.append((range_start, chunk_end))
+                else:
+                    # Range is small enough for new chunk size, split in half as fallback
+                    midpoint = range_start + (range_end - range_start) // 2
+                    ranges.append((midpoint + 1, range_end))
+                    ranges.append((range_start, midpoint))
+
+                LOGGER.debug(
+                    "Splitting chunk for contract %s due to 'response too big' error. Reducing chunk size to %d blocks.",
+                    contract_address,
+                    new_chunk_size,
+                    extra=build_log_extra(
+                        blockchain=blockchain,
+                        chain_id_label=runtime.chain_id_label,
+                        contract=contract,
+                        additional={
+                            "chunk_size": new_chunk_size,
+                            "from_block": range_start,
+                            "to_block": range_end,
+                        },
+                    ),
+                )
 
                 continue
 
@@ -564,8 +687,6 @@ def _collect_contract_transfer_count(
             )
 
             return None
-
-        total_logs += len(logs)
 
     return total_logs
 

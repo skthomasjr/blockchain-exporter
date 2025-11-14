@@ -12,6 +12,7 @@ import pytest
 from prometheus_client import CollectorRegistry
 
 from blockchain_exporter.config import AccountConfig, BlockchainConfig, ContractConfig
+from blockchain_exporter.exceptions import RpcConnectionError
 from blockchain_exporter.metrics import (
     CHAIN_HEALTH_STATUS,
     CHAIN_LAST_SUCCESS,
@@ -20,7 +21,6 @@ from blockchain_exporter.metrics import (
     record_poll_failure,
     record_poll_success,
 )
-from blockchain_exporter.exceptions import RpcConnectionError
 from blockchain_exporter.poller.collect import collect_chain_metrics_sync
 from blockchain_exporter.poller.control import poll_blockchain
 from blockchain_exporter.rpc import RpcClient, execute_with_retries
@@ -127,7 +127,7 @@ class FakePartialFailureRpcClient:
         if identifier not in self.block_call_map:
             self.block_call_map[identifier] = 0
         self.block_call_map[identifier] += 1
-        
+
         # Fail on first attempt for "latest" only (to test partial failure with retries)
         # With max_attempts=3, it will retry and succeed on the second attempt
         # "finalized" always succeeds to allow the collect to complete
@@ -163,7 +163,7 @@ class FakeMalformedResponseRpcClient:
         if identifier not in self.block_call_map:
             self.block_call_map[identifier] = 0
         self.block_call_map[identifier] += 1
-        
+
         # Missing required fields on first 2 attempts for "latest" only
         # This will cause AttributeError when accessing .number
         # With max_attempts=3, it will retry and succeed on the third attempt
@@ -202,7 +202,7 @@ class FakeRecoveryRpcClient:
         if identifier not in self.block_call_map:
             self.block_call_map[identifier] = 0
         self.block_call_map[identifier] += 1
-        
+
         # Fail on first N calls for "latest" only (to test recovery across multiple poll cycles)
         # Each poll cycle calls get_block("latest") once, and with max_attempts=3, it will retry within that call
         # So we need to fail enough times to exhaust retries in the first poll cycle
@@ -311,7 +311,7 @@ def test_partial_failures_handle_gracefully(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Test that partial failures (some operations succeed, others fail) are handled."""
-    from blockchain_exporter.metrics import set_metrics, get_metrics
+    from blockchain_exporter.metrics import get_metrics, set_metrics
 
     monkeypatch.setattr("blockchain_exporter.rpc.time.sleep", lambda _seconds: None)
 
@@ -350,7 +350,7 @@ def test_partial_failures_handle_gracefully(
                 if identifier not in self.block_call_map:
                     self.block_call_map[identifier] = 0
                 self.block_call_map[identifier] += 1
-                
+
                 # Fail on first attempt for "latest" only (will retry and succeed)
                 if identifier == "latest" and self.block_call_map[identifier] == 1:
                     raise NetworkTimeoutError("Request timed out")
@@ -365,7 +365,7 @@ def test_partial_failures_handle_gracefully(
         # get_balance succeeds immediately
         # The collect should succeed after retries
         result = collect_chain_metrics_sync(blockchain_with_accounts, rpc_client=rpc, metrics=test_metrics)
-        
+
         # The collect should succeed after retries
         assert result is True
 
@@ -409,7 +409,7 @@ def test_malformed_responses_retry_and_recover(
             if identifier not in self.block_call_map:
                 self.block_call_map[identifier] = 0
             self.block_call_map[identifier] += 1
-            
+
             # Raise exception on first 2 attempts for "latest" (will trigger retries)
             # "finalized" always succeeds
             if identifier == "latest" and self.block_call_map[identifier] <= 2:
@@ -424,7 +424,7 @@ def test_malformed_responses_retry_and_recover(
     # The malformed block will raise ValueError on first 2 attempts
     # execute_with_retries will retry and succeed on the third attempt
     result = collect_chain_metrics_sync(blockchain_config, rpc_client=rpc, metrics=test_metrics)
-    
+
     # With retries (max_attempts=3), it should succeed on the third attempt
     assert result is True
 
@@ -518,7 +518,7 @@ def test_metric_updates_during_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Test that metrics are updated correctly during failures."""
-    from blockchain_exporter.metrics import set_metrics, get_metrics
+    from blockchain_exporter.metrics import get_metrics, set_metrics
 
     # Save original metrics
     original_metrics = get_metrics()
@@ -601,7 +601,7 @@ async def test_recovery_after_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Test that the system recovers after RPC endpoint comes back online."""
-    from blockchain_exporter.metrics import set_metrics, get_metrics
+    from blockchain_exporter.metrics import get_metrics, set_metrics
 
     # Save original metrics
     original_metrics = get_metrics()
@@ -710,7 +710,7 @@ def test_contract_operations_with_partial_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Test that contract operations handle partial failures gracefully."""
-    from blockchain_exporter.metrics import set_metrics, get_metrics
+    from blockchain_exporter.metrics import get_metrics, set_metrics
 
     monkeypatch.setattr("blockchain_exporter.rpc.time.sleep", lambda _seconds: None)
 
@@ -748,7 +748,7 @@ def test_contract_operations_with_partial_failures(
                 if identifier not in self.block_call_map:
                     self.block_call_map[identifier] = 0
                 self.block_call_map[identifier] += 1
-                
+
                 # Fail on first attempt for "latest" only (will retry and succeed)
                 if identifier == "latest" and self.block_call_map[identifier] == 1:
                     raise NetworkTimeoutError("Request timed out")
@@ -775,7 +775,7 @@ def test_poller_failure_then_success_clears_consecutive_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Test that successful poll after failures clears consecutive failure counter."""
-    from blockchain_exporter.metrics import set_metrics, get_metrics
+    from blockchain_exporter.metrics import get_metrics, set_metrics
 
     # Save original metrics
     original_metrics = get_metrics()

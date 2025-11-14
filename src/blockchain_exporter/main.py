@@ -1,6 +1,7 @@
 import asyncio
 import signal
 import sys
+import threading
 
 import uvicorn
 
@@ -8,6 +9,10 @@ from .app import create_health_app, create_metrics_app
 from .settings import get_settings
 
 SETTINGS = get_settings()
+
+# Global event for SIGHUP-triggered config reload
+# This is set by the signal handler and checked by a background task in the app
+_reload_event = threading.Event()
 
 
 async def run_servers() -> None:
@@ -64,10 +69,15 @@ def run() -> None:
     # The handlers convert signals to KeyboardInterrupt, which asyncio.run() handles gracefully.
     def _signal_handler(signum: int, frame: object) -> None:
         """Handle termination signals by raising KeyboardInterrupt."""
-        raise KeyboardInterrupt(f"Received signal {signum}")
+        if signum in (signal.SIGTERM, signal.SIGINT):
+            raise KeyboardInterrupt(f"Received signal {signum}")
+        elif signum == signal.SIGHUP:
+            # Set reload event for SIGHUP (config reload)
+            _reload_event.set()
 
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGHUP, _signal_handler)
 
     try:
         asyncio.run(run_servers())

@@ -34,6 +34,19 @@ def _build_settings(level: str, log_format: str) -> AppSettings:
     )
 
 
+def _build_settings_with_warm_poll(enabled: bool, timeout: float = 30.0) -> AppSettings:
+    base_settings = get_settings()
+
+    return replace(
+        base_settings,
+        poller=replace(
+            base_settings.poller,
+            warm_poll_enabled=enabled,
+            warm_poll_timeout_seconds=timeout,
+        ),
+    )
+
+
 def test_configure_logging_uses_json_formatter(monkeypatch: pytest.MonkeyPatch) -> None:
     captured_config: dict[str, Any] = {}
 
@@ -186,4 +199,135 @@ async def test_lifespan_starts_polling_tasks(monkeypatch: pytest.MonkeyPatch) ->
     # Verify that tasks were cancelled on shutdown
     assert cancel_event.is_set()
     assert len(app.state.polling_tasks) == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
+async def test_lifespan_performs_warm_poll_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test that lifespan performs warm poll when enabled."""
+    caplog.set_level(logging.INFO)
+
+    metrics = get_metrics()
+
+    blockchain = BlockchainConfig(
+        name="SampleChain",
+        rpc_url="https://example.invalid",
+        poll_interval="10s",
+        contracts=[],
+        accounts=[],
+    )
+
+    runtime = RuntimeSettings(
+        app=_build_settings_with_warm_poll(enabled=True, timeout=5.0),
+        blockchains=[blockchain],
+        config_path=Path("config.toml"),
+    )
+
+    context = ApplicationContext(
+        metrics=metrics,
+        runtime=runtime,
+        rpc_factory=lambda _: None,
+    )
+
+    warm_poll_called = False
+
+    def _mock_collect_chain_metrics_sync(
+        blockchain_config: BlockchainConfig,
+        rpc_client: Any = None,
+        metrics_store: Any = None,
+    ) -> bool:
+        nonlocal warm_poll_called
+        warm_poll_called = True
+        return True
+
+    monkeypatch.setattr(app_module, "get_application_context", lambda: context)
+    monkeypatch.setattr(app_module, "SETTINGS", _build_settings_with_warm_poll(enabled=True, timeout=5.0))
+    monkeypatch.setattr(
+        app_module,
+        "collect_chain_metrics_sync",
+        _mock_collect_chain_metrics_sync,
+    )
+
+    async def _no_op_poll(*args: Any, **kwargs: Any) -> None:
+        await asyncio.sleep(0)
+
+    from blockchain_exporter.poller import control as poller_control_module
+
+    monkeypatch.setattr(poller_control_module, "poll_blockchain", _no_op_poll)
+
+    app = FastAPI(lifespan=_lifespan)
+
+    async with app.router.lifespan_context(app):
+        # Verify that warm poll was called
+        assert warm_poll_called
+        # Verify that polling tasks were still started
+        assert len(app.state.polling_tasks) == 1
+
+    # Verify warm poll was logged
+    info_messages = [record.message for record in caplog.records if record.levelname == "INFO"]
+    assert any("Performing warm poll" in message for message in info_messages)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("anyio_backend", ["asyncio"], indirect=True)
+async def test_lifespan_skips_warm_poll_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that lifespan skips warm poll when disabled."""
+    metrics = get_metrics()
+
+    blockchain = BlockchainConfig(
+        name="SampleChain",
+        rpc_url="https://example.invalid",
+        poll_interval="10s",
+        contracts=[],
+        accounts=[],
+    )
+
+    runtime = RuntimeSettings(
+        app=_build_settings_with_warm_poll(enabled=False),
+        blockchains=[blockchain],
+        config_path=Path("config.toml"),
+    )
+
+    context = ApplicationContext(
+        metrics=metrics,
+        runtime=runtime,
+        rpc_factory=lambda _: None,
+    )
+
+    warm_poll_called = False
+
+    def _mock_collect_chain_metrics_sync(
+        blockchain_config: BlockchainConfig,
+        rpc_client: Any = None,
+        metrics_store: Any = None,
+    ) -> bool:
+        nonlocal warm_poll_called
+        warm_poll_called = True
+        return True
+
+    monkeypatch.setattr(app_module, "get_application_context", lambda: context)
+    monkeypatch.setattr(app_module, "SETTINGS", _build_settings_with_warm_poll(enabled=False))
+    monkeypatch.setattr(
+        app_module,
+        "collect_chain_metrics_sync",
+        _mock_collect_chain_metrics_sync,
+    )
+
+    async def _no_op_poll(*args: Any, **kwargs: Any) -> None:
+        await asyncio.sleep(0)
+
+    from blockchain_exporter.poller import control as poller_control_module
+
+    monkeypatch.setattr(poller_control_module, "poll_blockchain", _no_op_poll)
+
+    app = FastAPI(lifespan=_lifespan)
+
+    async with app.router.lifespan_context(app):
+        # Verify that warm poll was NOT called
+        assert not warm_poll_called
+        # Verify that polling tasks were still started
+        assert len(app.state.polling_tasks) == 1
 

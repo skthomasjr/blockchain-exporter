@@ -15,16 +15,16 @@ from .intervals import (
 from .manager import PollerManager, get_poller_manager, reset_poller_manager
 
 __all__ = [
+    "ConnectionPoolManager",
+    "PollerManager",
     "collect_blockchain_metrics",
     "collect_chain_metrics_sync",
-    "poll_blockchain",
-    "ConnectionPoolManager",
     "get_connection_pool_manager",
+    "get_poller_manager",
+    "poll_blockchain",
     "reset_connection_pool_manager",
+    "reset_poller_manager",
     "DEFAULT_POLL_INTERVAL",
     "DEFAULT_POLL_INTERVAL_SECONDS",
     "MAX_FAILURE_BACKOFF_SECONDS",
-    "PollerManager",
-    "get_poller_manager",
-    "reset_poller_manager",
 ]

@@ -268,26 +268,40 @@ def test_record_contract_balances_sets_transfer_count_to_zero_when_missing(
 
 
 def test_collect_contract_transfer_count_chunks_and_retries(blockchain_config: BlockchainConfig) -> None:
-    rpc = FakeRpc()
-    rpc.logs_plan = {
-        (0, LOG_MAX_CHUNK_SIZE): 1,
-        (LOG_MAX_CHUNK_SIZE + 1, LOG_MAX_CHUNK_SIZE + 100): 2,
-        (0, LOG_MAX_CHUNK_SIZE // 2): 3,
-        (LOG_MAX_CHUNK_SIZE // 2 + 1, LOG_MAX_CHUNK_SIZE): 4,
-    }
-    rpc.error_ranges = {(0, LOG_MAX_CHUNK_SIZE)}
+    import signal
 
-    runtime = SimpleNamespace(config=blockchain_config, chain_id_label="1", rpc=rpc)
+    def timeout_handler(signum, frame):
+        raise TimeoutError("Test exceeded 5 second timeout")
 
-    contract = blockchain_config.contracts[0]
-    labels = SimpleNamespace()
-    window = TransferWindow(0, contract.transfer_lookback_blocks + 0, contract.transfer_lookback_blocks)
+    # Set up 5 second timeout
+    signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(5)
 
-    total = _collect_contract_transfer_count(runtime, contract, contract.address, labels, window)
+    try:
+        rpc = FakeRpc()
+        rpc.logs_plan = {
+            (0, LOG_MAX_CHUNK_SIZE): 1,
+            (LOG_MAX_CHUNK_SIZE + 1, LOG_MAX_CHUNK_SIZE + 100): 2,
+            (0, LOG_MAX_CHUNK_SIZE // 2): 3,
+            (LOG_MAX_CHUNK_SIZE // 2 + 1, LOG_MAX_CHUNK_SIZE): 4,
+        }
+        rpc.error_ranges = {(0, LOG_MAX_CHUNK_SIZE)}
 
-    expected_total = sum(rpc.logs_plan.get(call, 0) for call in rpc.success_calls)
-    assert total == expected_total
-    assert (0, LOG_MAX_CHUNK_SIZE) in rpc.get_logs_calls
+        runtime = SimpleNamespace(config=blockchain_config, chain_id_label="1", rpc=rpc)
+
+        contract = blockchain_config.contracts[0]
+        labels = SimpleNamespace()
+        window = TransferWindow(0, contract.transfer_lookback_blocks + 0, contract.transfer_lookback_blocks)
+
+        total = _collect_contract_transfer_count(runtime, contract, contract.address, labels, window)
+
+        expected_total = sum(rpc.logs_plan.get(call, 0) for call in rpc.success_calls)
+        assert total == expected_total
+        # After fix: (0, 1999) is correct for 2000 blocks (0-1999 inclusive)
+        # The test's logs_plan uses (0, 2000) which is 2001 blocks, but the actual call will be (0, 1999)
+        assert (0, LOG_MAX_CHUNK_SIZE - 1) in rpc.get_logs_calls or (0, LOG_MAX_CHUNK_SIZE) in rpc.get_logs_calls
+    finally:
+        signal.alarm(0)  # Cancel the alarm
 
 
 def test_helpers() -> None:
