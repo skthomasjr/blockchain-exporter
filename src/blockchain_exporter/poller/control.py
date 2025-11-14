@@ -9,7 +9,15 @@ import time
 from ..config import BlockchainConfig
 from ..context import ApplicationContext, get_application_context
 from ..logging import build_log_extra, get_logger, log_duration
-from ..metrics import MetricsStoreProtocol, record_poll_failure
+from ..exceptions import RpcError
+from ..metrics import (
+    MetricsStoreProtocol,
+    get_cached_chain_id_label,
+    record_backoff_duration,
+    record_consecutive_failures,
+    record_poll_duration,
+    record_poll_failure,
+)
 from ..rpc import RpcClientProtocol
 from .collect import collect_chain_metrics_sync
 from .intervals import (
@@ -59,11 +67,25 @@ async def poll_blockchain(
                 extra=build_log_extra(blockchain=blockchain),
             ):
                 rpc_client = context_obj.create_rpc_client(blockchain)
-                success = await collect_blockchain_metrics(
-                    blockchain,
-                    rpc_client=rpc_client,
-                    metrics=context_obj.metrics,
-                )
+                try:
+                    success = await collect_blockchain_metrics(
+                        blockchain,
+                        rpc_client=rpc_client,
+                        metrics=context_obj.metrics,
+                    )
+                finally:
+                    # Return Web3 client to connection pool for reuse
+                    # Only return if rpc_client was successfully created
+                    if rpc_client is not None:
+                        try:
+                            from .connection_pool import get_connection_pool_manager
+
+                            pool_manager = get_connection_pool_manager()
+                            pool_manager.return_client(blockchain, rpc_client.web3)
+                        except Exception:  # noqa: BLE001
+                            # Ignore errors when returning to pool (e.g., if web3 is None)
+                            # This prevents cascading failures during shutdown or test cleanup
+                            pass
         except asyncio.CancelledError:
             LOGGER.debug(
                 "Polling task for %s cancelled.",
@@ -71,7 +93,22 @@ async def poll_blockchain(
                 extra=build_log_extra(blockchain=blockchain),
             )
             raise
+        except RpcError as exc:
+            # RPC errors are expected and handled gracefully
+            LOGGER.warning(
+                "RPC error while polling blockchain %s: %s",
+                blockchain.name,
+                exc,
+                exc_info=exc,
+                extra=build_log_extra(
+                    blockchain=blockchain,
+                    additional=exc.context,
+                ),
+            )
+            record_poll_failure(blockchain)
+            consecutive_failures += 1
         except Exception as exc:  # noqa: BLE001
+            # Keep broad Exception catch for truly unexpected errors (programming errors, etc.)
             LOGGER.exception(
                 "Unexpected error while polling blockchain %s.",
                 blockchain.name,
@@ -100,12 +137,23 @@ async def poll_blockchain(
 
         elapsed = time.monotonic() - start_time
 
+        # Record poll duration
+        chain_id_label = get_cached_chain_id_label(blockchain)
+        record_poll_duration(blockchain, elapsed, chain_id_label=chain_id_label)
+
+        # Record consecutive failures
+        record_consecutive_failures(blockchain, consecutive_failures, chain_id_label=chain_id_label)
+
         if consecutive_failures > 0:
             failure_backoff = min(
                 interval_seconds * (2 ** (consecutive_failures - 1)),
                 MAX_FAILURE_BACKOFF_SECONDS,
             )
             sleep_duration = max(failure_backoff - elapsed, 0)
+
+            # Record backoff duration (only if we're actually backing off)
+            if sleep_duration > 0:
+                record_backoff_duration(blockchain, sleep_duration, chain_id_label=chain_id_label)
 
             LOGGER.debug(
                 "Backing off %.2f seconds before next poll for %s after %s consecutive failure(s).",

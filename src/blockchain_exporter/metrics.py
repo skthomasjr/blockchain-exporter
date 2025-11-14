@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, Protocol, runtime_checkable
 
-from prometheus_client import CollectorRegistry, Gauge
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
 from .config import BlockchainConfig
 
@@ -15,6 +15,7 @@ from .config import BlockchainConfig
 class ExporterMetrics:
     up: Gauge
     configured_blockchains: Gauge
+    poller_thread_count: Gauge
 
 
 @dataclass(slots=True)
@@ -43,6 +44,11 @@ class ChainMetrics:
     poll_timestamp: Gauge
     configured_accounts_count: Gauge
     configured_contracts_count: Gauge
+    rpc_call_duration_seconds: Histogram
+    rpc_error_total: Counter
+    poll_duration_seconds: Histogram
+    consecutive_failures: Gauge
+    backoff_duration_seconds: Histogram
 
 
 @runtime_checkable
@@ -75,6 +81,11 @@ def create_metrics(registry: CollectorRegistry | None = None) -> MetricsBundle:
         configured_blockchains=Gauge(
             "blockchain_exporter_configured_blockchains",
             "Number of blockchains currently configured in the exporter.",
+            registry=registry,
+        ),
+        poller_thread_count=Gauge(
+            "blockchain_exporter_poller_thread_count",
+            "Number of active polling threads (tasks) currently running.",
             registry=registry,
         ),
     )
@@ -198,6 +209,39 @@ def create_metrics(registry: CollectorRegistry | None = None) -> MetricsBundle:
             "blockchain_chain_configured_contracts_count",
             "Total number of configured contracts per blockchain.",
             labelnames=("blockchain", "chain_id"),
+            registry=registry,
+        ),
+        rpc_call_duration_seconds=Histogram(
+            "blockchain_rpc_call_duration_seconds",
+            "Duration of RPC calls in seconds, measured per blockchain, chain_id, and operation type.",
+            labelnames=("blockchain", "chain_id", "operation"),
+            buckets=(0.01, 0.05, 0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
+            registry=registry,
+        ),
+        rpc_error_total=Counter(
+            "blockchain_rpc_error_total",
+            "Total number of RPC errors, categorized by error type, blockchain, chain_id, and operation.",
+            labelnames=("blockchain", "chain_id", "operation", "error_type"),
+            registry=registry,
+        ),
+        poll_duration_seconds=Histogram(
+            "blockchain_poll_duration_seconds",
+            "Duration of polling cycles in seconds, measured per blockchain and chain_id.",
+            labelnames=("blockchain", "chain_id"),
+            buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0),
+            registry=registry,
+        ),
+        consecutive_failures=Gauge(
+            "blockchain_poll_consecutive_failures",
+            "Number of consecutive polling failures for a blockchain, per chain_id.",
+            labelnames=("blockchain", "chain_id"),
+            registry=registry,
+        ),
+        backoff_duration_seconds=Histogram(
+            "blockchain_poll_backoff_duration_seconds",
+            "Duration of backoff delays in seconds after polling failures, per blockchain and chain_id.",
+            labelnames=("blockchain", "chain_id"),
+            buckets=(0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 900.0),
             registry=registry,
         ),
     )
@@ -349,24 +393,36 @@ def remove_chain_metrics_for_label(
     _safe_remove_metric(metrics.chain.time_since_last_block, label_tuple)
     _safe_remove_metric(metrics.chain.configured_accounts_count, label_tuple)
     _safe_remove_metric(metrics.chain.configured_contracts_count, label_tuple)
+    # Note: We don't remove rpc_call_duration_seconds metrics as they are histograms
+    # that accumulate over time and don't need explicit cleanup.
     CHAIN_HEALTH_STATUS.pop(label_tuple, None)
     CHAIN_LAST_SUCCESS.pop(label_tuple, None)
 
 
-def reset_chain_metrics(blockchain: BlockchainConfig, chain_id_label: str | None = None) -> None:
-    """Reset chain-level gauges for the provided label."""
+def reset_chain_metrics(
+    blockchain: BlockchainConfig,
+    chain_id_label: str | None = None,
+    *,
+    metrics: MetricsStoreProtocol | None = None,
+) -> None:
+    """Reset chain-level gauges for the provided label.
 
-    metrics = get_metrics()
+    Args:
+        blockchain: The blockchain configuration.
+        chain_id_label: Optional chain ID label (defaults to cached or 'unknown').
+        metrics: Optional metrics store (defaults to global metrics).
+    """
+    metrics_store = metrics or get_metrics()
     resolved_label = chain_id_label or get_cached_chain_id_label(blockchain) or "unknown"
 
     labels = (blockchain.name, resolved_label)
 
-    metrics.chain.head_block_number.labels(*labels).set(0)
-    metrics.chain.finalized_block_number.labels(*labels).set(0)
-    metrics.chain.head_block_timestamp.labels(*labels).set(0)
-    metrics.chain.time_since_last_block.labels(*labels).set(0)
-    metrics.chain.configured_accounts_count.labels(*labels).set(0)
-    metrics.chain.configured_contracts_count.labels(*labels).set(0)
+    metrics_store.chain.head_block_number.labels(*labels).set(0)
+    metrics_store.chain.finalized_block_number.labels(*labels).set(0)
+    metrics_store.chain.head_block_timestamp.labels(*labels).set(0)
+    metrics_store.chain.time_since_last_block.labels(*labels).set(0)
+    metrics_store.chain.configured_accounts_count.labels(*labels).set(0)
+    metrics_store.chain.configured_contracts_count.labels(*labels).set(0)
 
 
 def record_poll_success(
@@ -374,16 +430,23 @@ def record_poll_success(
     chain_id_label: str,
     *,
     timestamp: float | None = None,
+    metrics: MetricsStoreProtocol | None = None,
 ) -> None:
-    """Record a successful polling cycle for the given chain."""
+    """Record a successful polling cycle for the given chain.
 
-    metrics = get_metrics()
+    Args:
+        blockchain: The blockchain configuration.
+        chain_id_label: The chain ID label.
+        timestamp: Optional timestamp (defaults to current time).
+        metrics: Optional metrics store (defaults to global metrics).
+    """
+    metrics_store = metrics or get_metrics()
     labels = (blockchain.name, chain_id_label)
 
     now = time.time() if timestamp is None else timestamp
 
-    metrics.chain.poll_success.labels(*labels).set(1)
-    metrics.chain.poll_timestamp.labels(*labels).set(now)
+    metrics_store.chain.poll_success.labels(*labels).set(1)
+    metrics_store.chain.poll_timestamp.labels(*labels).set(now)
     CHAIN_HEALTH_STATUS[(blockchain.name, chain_id_label)] = True
     CHAIN_LAST_SUCCESS[(blockchain.name, chain_id_label)] = now
 
@@ -391,18 +454,25 @@ def record_poll_success(
 def record_poll_failure(
     blockchain: BlockchainConfig,
     chain_id_label: str | None = None,
+    *,
+    metrics: MetricsStoreProtocol | None = None,
 ) -> None:
-    """Record a failed polling cycle for the given chain."""
+    """Record a failed polling cycle for the given chain.
 
-    metrics = get_metrics()
+    Args:
+        blockchain: The blockchain configuration.
+        chain_id_label: Optional chain ID label (defaults to cached or 'unknown').
+        metrics: Optional metrics store (defaults to global metrics).
+    """
+    metrics_store = metrics or get_metrics()
     resolved_label = chain_id_label or get_cached_chain_id_label(blockchain) or "unknown"
 
     labels = (blockchain.name, resolved_label)
 
-    metrics.chain.poll_success.labels(*labels).set(0)
-    metrics.chain.poll_timestamp.labels(*labels).set(0)
+    metrics_store.chain.poll_success.labels(*labels).set(0)
+    metrics_store.chain.poll_timestamp.labels(*labels).set(0)
 
-    reset_chain_metrics(blockchain, resolved_label)
+    reset_chain_metrics(blockchain, resolved_label, metrics=metrics_store)
     clear_cached_metrics(blockchain)
     CHAIN_HEALTH_STATUS[(blockchain.name, resolved_label)] = False
 
@@ -428,6 +498,120 @@ def handle_chain_id_update(
     CHAIN_RESOLVED_IDS[identity] = new_label
 
 
+def record_rpc_call_duration(
+    blockchain: BlockchainConfig,
+    operation: str,
+    duration_seconds: float,
+    chain_id_label: str | None = None,
+) -> None:
+    """Record the duration of an RPC call.
+
+    Args:
+        blockchain: The blockchain configuration.
+        operation: The operation type (e.g., "get_balance", "get_block", "get_logs").
+        duration_seconds: The duration of the RPC call in seconds.
+        chain_id_label: The chain ID label. If None, will attempt to resolve from cache.
+    """
+    metrics = get_metrics()
+    resolved_label = chain_id_label or get_cached_chain_id_label(blockchain) or "unknown"
+
+    labels = (blockchain.name, resolved_label, operation)
+
+    metrics.chain.rpc_call_duration_seconds.labels(*labels).observe(duration_seconds)
+
+
+def record_rpc_error(
+    blockchain: BlockchainConfig,
+    operation: str,
+    error_type: str,
+    chain_id_label: str | None = None,
+) -> None:
+    """Record an RPC error.
+
+    Args:
+        blockchain: The blockchain configuration.
+        operation: The operation type (e.g., "get_balance", "get_block", "get_logs").
+        error_type: The error category (e.g., "timeout", "connection_error", "rpc_error", "value_error", "unknown").
+        chain_id_label: The chain ID label. If None, will attempt to resolve from cache.
+    """
+    metrics = get_metrics()
+    resolved_label = chain_id_label or get_cached_chain_id_label(blockchain) or "unknown"
+
+    labels = (blockchain.name, resolved_label, operation, error_type)
+
+    metrics.chain.rpc_error_total.labels(*labels).inc()
+
+
+def record_poll_duration(
+    blockchain: BlockchainConfig,
+    duration_seconds: float,
+    chain_id_label: str | None = None,
+) -> None:
+    """Record the duration of a polling cycle.
+
+    Args:
+        blockchain: The blockchain configuration.
+        duration_seconds: The duration of the polling cycle in seconds.
+        chain_id_label: The chain ID label. If None, will attempt to resolve from cache.
+    """
+    metrics = get_metrics()
+    resolved_label = chain_id_label or get_cached_chain_id_label(blockchain) or "unknown"
+
+    labels = (blockchain.name, resolved_label)
+
+    metrics.chain.poll_duration_seconds.labels(*labels).observe(duration_seconds)
+
+
+def record_consecutive_failures(
+    blockchain: BlockchainConfig,
+    consecutive_failures: int,
+    chain_id_label: str | None = None,
+) -> None:
+    """Record the number of consecutive polling failures.
+
+    Args:
+        blockchain: The blockchain configuration.
+        consecutive_failures: The number of consecutive failures.
+        chain_id_label: The chain ID label. If None, will attempt to resolve from cache.
+    """
+    metrics = get_metrics()
+    resolved_label = chain_id_label or get_cached_chain_id_label(blockchain) or "unknown"
+
+    labels = (blockchain.name, resolved_label)
+
+    metrics.chain.consecutive_failures.labels(*labels).set(float(consecutive_failures))
+
+
+def record_backoff_duration(
+    blockchain: BlockchainConfig,
+    backoff_seconds: float,
+    chain_id_label: str | None = None,
+) -> None:
+    """Record the duration of a backoff delay.
+
+    Args:
+        blockchain: The blockchain configuration.
+        backoff_seconds: The duration of the backoff delay in seconds.
+        chain_id_label: The chain ID label. If None, will attempt to resolve from cache.
+    """
+    metrics = get_metrics()
+    resolved_label = chain_id_label or get_cached_chain_id_label(blockchain) or "unknown"
+
+    labels = (blockchain.name, resolved_label)
+
+    metrics.chain.backoff_duration_seconds.labels(*labels).observe(backoff_seconds)
+
+
+def update_poller_thread_count(active_count: int) -> None:
+    """Update the number of active polling threads (tasks).
+
+    Args:
+        active_count: The number of active polling tasks.
+    """
+    metrics = get_metrics()
+    metrics.exporter.poller_thread_count.set(float(active_count))
+
+
 __all__ = [
     "AccountMetrics",
     "ChainMetricLabelState",
@@ -442,13 +626,18 @@ __all__ = [
     "get_cached_chain_id_label",
     "get_metrics",
     "handle_chain_id_update",
+    "record_backoff_duration",
+    "record_consecutive_failures",
+    "record_poll_duration",
     "record_poll_failure",
     "record_poll_success",
+    "record_rpc_call_duration",
+    "record_rpc_error",
     "remove_chain_metrics_for_label",
+    "update_poller_thread_count",
     "reset_chain_metrics",
     "reset_metrics_state",
     "set_configured_blockchains",
     "set_metrics",
     "update_chain_label_cache",
 ]
-

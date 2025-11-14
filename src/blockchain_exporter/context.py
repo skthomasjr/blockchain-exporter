@@ -41,11 +41,17 @@ class ApplicationContext:
 
 
 def default_rpc_factory(blockchain: BlockchainConfig) -> RpcClientProtocol:
-    """Create a retry-enabled `RpcClient` for the given blockchain."""
+    """Create a retry-enabled `RpcClient` for the given blockchain.
 
-    from .poller.intervals import create_web3_client
+    Uses connection pooling to reuse Web3 clients and HTTP connections
+    for improved performance when polling multiple chains or making
+    frequent requests.
+    """
 
-    web3_client = create_web3_client(blockchain)
+    from .poller.connection_pool import get_connection_pool_manager
+
+    pool_manager = get_connection_pool_manager()
+    web3_client = pool_manager.get_client(blockchain)
     return RpcClient(web3_client, blockchain)
 
 

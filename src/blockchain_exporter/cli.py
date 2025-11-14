@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import load_blockchain_configs
+from .exceptions import ConfigError, ValidationError
 from .runtime_settings import RuntimeSettings, get_runtime_settings
 
 
@@ -91,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         _load_configs(config_path)
     except FileNotFoundError as exc:
         parser.error(f"Config file not found: {exc}")
-    except ValueError as exc:
+    except (ConfigError, ValidationError) as exc:
         parser.error(str(exc))
 
     print("Configuration OK")

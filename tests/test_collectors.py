@@ -23,6 +23,7 @@ from blockchain_exporter.collectors import (
     record_contract_balances,
 )
 from blockchain_exporter.config import AccountConfig, BlockchainConfig, ContractConfig
+from blockchain_exporter.exceptions import RpcError
 from blockchain_exporter.metrics import ChainMetricLabelState, create_metrics
 from blockchain_exporter.models import ChainRuntimeContext, TransferWindow
 from blockchain_exporter.rpc import RPC_MAX_RETRIES
@@ -35,8 +36,11 @@ class FakeRpc:
         self.success_calls: list[tuple[int, int]] = []
         self.logs_plan: dict[tuple[int, int], int] = {}
         self.error_ranges: set[tuple[int, int]] = set()
-
-    web3 = SimpleNamespace()
+        self.block_calls: list[str] = []
+        self.web3 = SimpleNamespace(
+            is_connected=lambda: True,
+            eth=SimpleNamespace(chain_id=1),
+        )
 
     def get_balance(self, address: str, **_kwargs) -> int:
         self.get_balance_calls.append(address)
@@ -44,6 +48,15 @@ class FakeRpc:
 
     def get_code(self, address: str, **_kwargs) -> bytes:
         return b""
+
+    def get_block(self, identifier: str, **_kwargs) -> SimpleNamespace:
+        """Get block by identifier (latest, finalized, or block number)."""
+        self.block_calls.append(identifier)
+        if identifier == "latest":
+            return SimpleNamespace(number=100, timestamp=1000)
+        if identifier == "finalized":
+            return SimpleNamespace(number=90, timestamp=900)
+        return SimpleNamespace(number=100, timestamp=1000)
 
     def call_contract_function(self, call, *_args, **_kwargs):  # type: ignore[no-untyped-def]
         return call()
@@ -56,7 +69,16 @@ class FakeRpc:
 
         if key in self.error_ranges:
             self.error_ranges.remove(key)
-            raise Web3RPCError({"message": "Response is too big"})
+            # Raise RpcProtocolError to match what RpcClient would wrap Web3RPCError as
+            from blockchain_exporter.exceptions import RpcProtocolError
+
+            raise RpcProtocolError(
+                "RPC operation 'eth_getLogs' failed: Response is too big",
+                blockchain="Test Chain",
+                rpc_url="https://rpc.example",
+                rpc_error_code=None,
+                rpc_error_message="Response is too big",
+            )
 
         count = self.logs_plan.get(key, 0)
         self.success_calls.append(key)
@@ -95,12 +117,17 @@ class RpcWithContract(FakeRpc):
         self._decimals = decimals
         self._fail_decimals = fail_decimals
         self.web3 = SimpleNamespace(
-            eth=SimpleNamespace(contract=lambda *_args, **_kwargs: FakeContract(balance, decimals)),
+            is_connected=lambda: True,
+            eth=SimpleNamespace(
+                chain_id=1,
+                contract=lambda *_args, **_kwargs: FakeContract(balance, decimals),
+            ),
         )
 
     def call_contract_function(self, func, description: str, **_kwargs):  # type: ignore[no-untyped-def]
         if self._fail_decimals and description.endswith("decimals()"):
-            raise RuntimeError("decimals unavailable")
+            # Raise RpcError directly since collectors.py now catches RpcError
+            raise RpcError("decimals unavailable", blockchain="Test Chain", rpc_url="https://rpc.example")
         return func()
 
 
@@ -187,7 +214,8 @@ def test_record_contract_balances_on_failure_sets_zero(monkeypatch, blockchain_c
     )
 
     def failing_balance(_address: str, **_kwargs) -> int:
-        raise RuntimeError("rpc failure")
+        # Raise RpcError directly since collectors.py now catches RpcError
+        raise RpcError("rpc failure", blockchain=blockchain_config.name, rpc_url=blockchain_config.rpc_url)
 
     rpc.get_balance = failing_balance  # type: ignore[assignment]
 
@@ -376,7 +404,9 @@ def test_record_contract_account_token_balance_handles_failures(blockchain_confi
     assert balance_metric._value.get() == 0.0
 
 
-def test_record_contract_account_token_balance_uses_rpc_retry_configuration(blockchain_config: BlockchainConfig) -> None:
+def test_record_contract_account_token_balance_uses_rpc_retry_configuration(
+    blockchain_config: BlockchainConfig,
+) -> None:
     class RecordingRpc(FakeRpc):
         def __init__(self) -> None:
             super().__init__()
@@ -468,7 +498,8 @@ def test_collect_contract_total_supply_handles_errors(blockchain_config: Blockch
     runtime = build_runtime(blockchain_config, rpc)
 
     def failing_call(call, description: str, **_kwargs):  # type: ignore[no-untyped-def]
-        raise RuntimeError("no supply")
+        # Raise RpcError directly since collectors.py now catches RpcError
+        raise RpcError("no supply", blockchain=blockchain_config.name, rpc_url=blockchain_config.rpc_url)
 
     runtime.rpc.call_contract_function = failing_call  # type: ignore[assignment]
 
@@ -482,7 +513,9 @@ def test_collect_contract_total_supply_handles_errors(blockchain_config: Blockch
     assert result == Decimal(0)
 
 
-def test_record_additional_contract_accounts_processes_new_account(monkeypatch, blockchain_config: BlockchainConfig) -> None:
+def test_record_additional_contract_accounts_processes_new_account(
+    monkeypatch, blockchain_config: BlockchainConfig
+) -> None:
     rpc = FakeRpc()
     rpc.get_code = lambda *_args, **_kwargs: b"\x01"
     rpc.call_contract_function = lambda func, *_args, **_kwargs: func()
@@ -516,11 +549,14 @@ def test_record_additional_contract_accounts_processes_new_account(monkeypatch, 
     assert extra_account.address.lower() in processed_accounts
 
 
-def test_record_additional_contract_accounts_handles_rpc_errors(monkeypatch, blockchain_config: BlockchainConfig) -> None:
+def test_record_additional_contract_accounts_handles_rpc_errors(
+    monkeypatch, blockchain_config: BlockchainConfig
+) -> None:
     rpc = FakeRpc()
 
     def failing_get_code(*_args, **_kwargs) -> bytes:
-        raise RuntimeError("rpc down")
+        # Raise RpcError directly since collectors.py now catches RpcError
+        raise RpcError("rpc down", blockchain=blockchain_config.name, rpc_url=blockchain_config.rpc_url)
 
     rpc.get_code = failing_get_code  # type: ignore[assignment]
 
@@ -555,3 +591,216 @@ def test_record_additional_contract_accounts_handles_rpc_errors(monkeypatch, blo
     assert cleared_accounts == [extra_account.address, extra_account.address]
     assert zero_calls == [(extra_account.address, False)]
     assert extra_account.address.lower() in processed_accounts
+
+
+def test_record_contract_balances_skips_disabled_contracts(
+    blockchain_config: BlockchainConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test that record_contract_balances skips disabled contracts."""
+    from dataclasses import replace
+
+    from blockchain_exporter.config import ContractConfig
+
+    rpc = FakeRpc()
+    rpc.call_contract_function = lambda func, *_args, **_kwargs: func()
+
+    # Create a config with one enabled and one disabled contract
+    enabled_contract = ContractConfig(
+        name="Enabled Token",
+        address="0x0000000000000000000000000000000000000003",
+        decimals=None,
+        accounts=[],
+        transfer_lookback_blocks=10,
+        enabled=True,
+    )
+    disabled_contract = ContractConfig(
+        name="Disabled Token",
+        address="0x0000000000000000000000000000000000000004",
+        decimals=None,
+        accounts=[],
+        transfer_lookback_blocks=10,
+        enabled=False,
+    )
+    config_with_disabled = replace(
+        blockchain_config,
+        contracts=[enabled_contract, disabled_contract],
+    )
+
+    runtime = build_runtime(config_with_disabled, rpc)
+
+    processed_contracts: list[str] = []
+
+    def fake_collect_balance(runtime_arg, contract, checksum_address, contract_labels):  # type: ignore[no-untyped-def]
+        processed_contracts.append(contract.name)
+        return Decimal(1000)
+
+    monkeypatch.setattr("blockchain_exporter.collectors._collect_contract_total_supply", fake_collect_balance)
+    monkeypatch.setattr("blockchain_exporter.collectors._collect_contract_transfer_count", lambda *_args, **_kwargs: 0)
+
+    record_contract_balances(runtime, latest_block_number=100)
+
+    # Only the enabled contract should be processed
+    assert len(processed_contracts) == 1
+    assert processed_contracts[0] == "Enabled Token"
+
+
+def test_record_additional_contract_accounts_skips_disabled(
+    blockchain_config: BlockchainConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test that record_additional_contract_accounts skips disabled contract accounts."""
+    from dataclasses import replace
+
+    from blockchain_exporter.config import ContractAccountConfig, ContractConfig
+
+    rpc = FakeRpc()
+    rpc.get_code = lambda *_args, **_kwargs: b"\x01"
+    rpc.call_contract_function = lambda func, *_args, **_kwargs: func()
+
+    # Create a contract with enabled and disabled accounts
+    enabled_account = ContractAccountConfig(
+        name="Enabled Account",
+        address="0x0000000000000000000000000000000000000005",
+        enabled=True,
+    )
+    disabled_account = ContractAccountConfig(
+        name="Disabled Account",
+        address="0x0000000000000000000000000000000000000006",
+        enabled=False,
+    )
+    contract_with_accounts = ContractConfig(
+        name="Token",
+        address="0x0000000000000000000000000000000000000002",
+        decimals=None,
+        accounts=[enabled_account, disabled_account],
+        transfer_lookback_blocks=10,
+        enabled=True,
+    )
+    config_with_accounts = replace(
+        blockchain_config,
+        contracts=[contract_with_accounts],
+    )
+
+    runtime = build_runtime(config_with_accounts, rpc)
+
+    processed_accounts_list: list[str] = []
+
+    def fake_record(runtime_arg, contract, checksum_address, account_labels, is_contract):  # type: ignore[no-untyped-def]
+        processed_accounts_list.append(account_labels.account_address)
+
+    monkeypatch.setattr("blockchain_exporter.collectors._record_contract_account_token_balance", fake_record)
+    monkeypatch.setattr("blockchain_exporter.collectors.clear_eth_metrics_for_account", lambda *_args, **_kwargs: None)
+
+    processed_accounts: set[str] = set()
+    record_additional_contract_accounts(runtime, processed_accounts)
+
+    # Only the enabled account should be processed
+    assert len(processed_accounts_list) == 1
+    assert processed_accounts_list[0] == enabled_account.address
+    assert disabled_account.address.lower() not in processed_accounts
+
+
+def test_collect_chain_metrics_sync_skips_disabled_accounts(
+    blockchain_config: BlockchainConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test that collect_chain_metrics_sync skips disabled accounts."""
+    from dataclasses import replace
+
+    from blockchain_exporter.config import AccountConfig
+    from blockchain_exporter.poller.collect import collect_chain_metrics_sync
+
+    rpc = FakeRpc()
+
+    # Create a config with enabled and disabled accounts
+    enabled_account = AccountConfig(
+        name="Enabled Account",
+        address="0x0000000000000000000000000000000000000007",
+        enabled=True,
+    )
+    disabled_account = AccountConfig(
+        name="Disabled Account",
+        address="0x0000000000000000000000000000000000000008",
+        enabled=False,
+    )
+    config_with_disabled = replace(
+        blockchain_config,
+        accounts=[enabled_account, disabled_account],
+    )
+
+    processed_addresses: list[str] = []
+
+    def fake_get_balance(address: str, **_kwargs) -> int:
+        processed_addresses.append(address)
+        return 1000
+
+    def fake_get_code(address: str, **_kwargs) -> bytes:
+        return b""
+
+    rpc.get_balance = fake_get_balance  # type: ignore[assignment]
+    rpc.get_code = fake_get_code  # type: ignore[assignment]
+
+    monkeypatch.setattr("blockchain_exporter.poller.collect.record_contract_balances", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "blockchain_exporter.poller.collect.record_additional_contract_accounts", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr("blockchain_exporter.poller.collect.record_poll_success", lambda *_args, **_kwargs: None)
+
+    result = collect_chain_metrics_sync(config_with_disabled, rpc_client=rpc)
+
+    assert result is True
+    # Only the enabled account should be processed
+    assert len(processed_addresses) == 1
+    assert processed_addresses[0].lower() == enabled_account.address.lower()
+
+
+def test_record_chain_health_metrics_counts_only_enabled(
+    blockchain_config: BlockchainConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test that _record_chain_health_metrics counts only enabled contracts and accounts."""
+    from dataclasses import replace
+
+    from blockchain_exporter.config import AccountConfig, ContractAccountConfig, ContractConfig
+    from blockchain_exporter.poller.collect import _record_chain_health_metrics
+
+    rpc = FakeRpc()
+
+    # Create a config with enabled and disabled items
+    enabled_account = AccountConfig(name="Enabled Account", address="0x01", enabled=True)
+    disabled_account = AccountConfig(name="Disabled Account", address="0x02", enabled=False)
+    enabled_contract_account = ContractAccountConfig(name="Enabled CA", address="0x03", enabled=True)
+    disabled_contract_account = ContractAccountConfig(name="Disabled CA", address="0x04", enabled=False)
+    enabled_contract = ContractConfig(
+        name="Enabled Contract",
+        address="0x05",
+        decimals=None,
+        accounts=[enabled_contract_account, disabled_contract_account],
+        transfer_lookback_blocks=10,
+        enabled=True,
+    )
+    disabled_contract = ContractConfig(
+        name="Disabled Contract",
+        address="0x06",
+        decimals=None,
+        accounts=[],
+        transfer_lookback_blocks=10,
+        enabled=False,
+    )
+    config = replace(
+        blockchain_config,
+        accounts=[enabled_account, disabled_account],
+        contracts=[enabled_contract, disabled_contract],
+    )
+
+    runtime = build_runtime(config, rpc)
+
+    _record_chain_health_metrics(runtime)
+
+    metrics = runtime.metrics
+    labels = (config.name, "1")
+
+    # Should count only enabled items: 1 enabled contract, 1 enabled account + 1 enabled contract account
+    assert metrics.chain.configured_contracts_count.labels(*labels)._value.get() == 1.0
+    assert metrics.chain.configured_accounts_count.labels(*labels)._value.get() == 2.0
